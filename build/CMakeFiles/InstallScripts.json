@@ -1,0 +1,12 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/manavmadanrawal/Dev/schrodingerssandbox/build/cmake_install.cmake",
+		"/Users/manavmadanrawal/Dev/schrodingerssandbox/build/external/glfw/cmake_install.cmake",
+		"/Users/manavmadanrawal/Dev/schrodingerssandbox/build/external/glfw/src/cmake_install.cmake",
+		"/Users/manavmadanrawal/Dev/schrodingerssandbox/build/external/googletest/cmake_install.cmake",
+		"/Users/manavmadanrawal/Dev/schrodingerssandbox/build/external/googletest/googlemock/cmake_install.cmake",
+		"/Users/manavmadanrawal/Dev/schrodingerssandbox/build/external/googletest/googletest/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

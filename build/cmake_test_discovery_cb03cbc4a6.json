@@ -1,0 +1,22 @@
+{
+  "tests": 2,
+  "name": "AllTests",
+  "testsuites": [
+    {
+      "name": "ConstantsTest",
+      "tests": 2,
+      "testsuite": [
+        {
+          "name": "BohrRadiusAngstromMatchesExpectedValue",
+          "file": "\/Users\/manavmadanrawal\/Dev\/schrodingerssandbox\/tests\/test_constants.cpp",
+          "line": 5
+        },
+        {
+          "name": "HartreeEnergyEvMatchesExpectedValue",
+          "file": "\/Users\/manavmadanrawal\/Dev\/schrodingerssandbox\/tests\/test_constants.cpp",
+          "line": 9
+        }
+      ]
+    }
+  ]
+}

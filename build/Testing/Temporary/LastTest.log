@@ -1,0 +1,145 @@
+Start testing: Feb 16 00:16 GMT
+----------------------------------------------------------
+1/5 Testing: ConstantsTest.BohrRadiusAngstromMatchesExpectedValue
+1/5 Test: ConstantsTest.BohrRadiusAngstromMatchesExpectedValue
+Command: "/Users/manavmadanrawal/Dev/schrodingerssandbox/build/test_constants" "--gtest_filter=ConstantsTest.BohrRadiusAngstromMatchesExpectedValue" "--gtest_also_run_disabled_tests"
+Directory: /Users/manavmadanrawal/Dev/schrodingerssandbox/build
+"ConstantsTest.BohrRadiusAngstromMatchesExpectedValue" start time: Feb 16 00:16 GMT
+Output:
+----------------------------------------------------------
+Running main() from /Users/manavmadanrawal/Dev/schrodingerssandbox/external/googletest/googletest/src/gtest_main.cc
+Note: Google Test filter = ConstantsTest.BohrRadiusAngstromMatchesExpectedValue
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ConstantsTest
+[ RUN      ] ConstantsTest.BohrRadiusAngstromMatchesExpectedValue
+[       OK ] ConstantsTest.BohrRadiusAngstromMatchesExpectedValue (0 ms)
+[----------] 1 test from ConstantsTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"ConstantsTest.BohrRadiusAngstromMatchesExpectedValue" end time: Feb 16 00:16 GMT
+"ConstantsTest.BohrRadiusAngstromMatchesExpectedValue" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/5 Testing: ConstantsTest.HartreeEnergyEvMatchesExpectedValue
+2/5 Test: ConstantsTest.HartreeEnergyEvMatchesExpectedValue
+Command: "/Users/manavmadanrawal/Dev/schrodingerssandbox/build/test_constants" "--gtest_filter=ConstantsTest.HartreeEnergyEvMatchesExpectedValue" "--gtest_also_run_disabled_tests"
+Directory: /Users/manavmadanrawal/Dev/schrodingerssandbox/build
+"ConstantsTest.HartreeEnergyEvMatchesExpectedValue" start time: Feb 16 00:16 GMT
+Output:
+----------------------------------------------------------
+Running main() from /Users/manavmadanrawal/Dev/schrodingerssandbox/external/googletest/googletest/src/gtest_main.cc
+Note: Google Test filter = ConstantsTest.HartreeEnergyEvMatchesExpectedValue
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from ConstantsTest
+[ RUN      ] ConstantsTest.HartreeEnergyEvMatchesExpectedValue
+[       OK ] ConstantsTest.HartreeEnergyEvMatchesExpectedValue (0 ms)
+[----------] 1 test from ConstantsTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"ConstantsTest.HartreeEnergyEvMatchesExpectedValue" end time: Feb 16 00:16 GMT
+"ConstantsTest.HartreeEnergyEvMatchesExpectedValue" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/5 Testing: test_special_functions
+3/5 Test: test_special_functions
+Command: "/Users/manavmadanrawal/Dev/schrodingerssandbox/build/test_special_functions"
+Directory: /Users/manavmadanrawal/Dev/schrodingerssandbox/build
+"test_special_functions" start time: Feb 16 00:16 GMT
+Output:
+----------------------------------------------------------
+Running main() from /Users/manavmadanrawal/Dev/schrodingerssandbox/external/googletest/googletest/src/gtest_main.cc
+[==========] Running 3 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 3 tests from SpecialFunctionsTest
+[ RUN      ] SpecialFunctionsTest.AssociatedLaguerreValues
+[       OK ] SpecialFunctionsTest.AssociatedLaguerreValues (0 ms)
+[ RUN      ] SpecialFunctionsTest.AssociatedLegendreValues
+[       OK ] SpecialFunctionsTest.AssociatedLegendreValues (0 ms)
+[ RUN      ] SpecialFunctionsTest.RealSphericalHarmonicValues
+[       OK ] SpecialFunctionsTest.RealSphericalHarmonicValues (0 ms)
+[----------] 3 tests from SpecialFunctionsTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 3 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 3 tests.
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"test_special_functions" end time: Feb 16 00:16 GMT
+"test_special_functions" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/5 Testing: test_hydrogen
+4/5 Test: test_hydrogen
+Command: "/Users/manavmadanrawal/Dev/schrodingerssandbox/build/test_hydrogen"
+Directory: /Users/manavmadanrawal/Dev/schrodingerssandbox/build
+"test_hydrogen" start time: Feb 16 00:16 GMT
+Output:
+----------------------------------------------------------
+Running main() from /Users/manavmadanrawal/Dev/schrodingerssandbox/external/googletest/googletest/src/gtest_main.cc
+[==========] Running 3 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 3 tests from HydrogenTest
+[ RUN      ] HydrogenTest.RadialWavefunctionValues
+[       OK ] HydrogenTest.RadialWavefunctionValues (0 ms)
+[ RUN      ] HydrogenTest.RadialWavefunctionNormalization
+[       OK ] HydrogenTest.RadialWavefunctionNormalization (1 ms)
+[ RUN      ] HydrogenTest.OrbitalValues
+[       OK ] HydrogenTest.OrbitalValues (0 ms)
+[----------] 3 tests from HydrogenTest (1 ms total)
+
+[----------] Global test environment tear-down
+[==========] 3 tests from 1 test suite ran. (1 ms total)
+[  PASSED  ] 3 tests.
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"test_hydrogen" end time: Feb 16 00:16 GMT
+"test_hydrogen" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/5 Testing: test_slater
+5/5 Test: test_slater
+Command: "/Users/manavmadanrawal/Dev/schrodingerssandbox/build/test_slater"
+Directory: /Users/manavmadanrawal/Dev/schrodingerssandbox/build
+"test_slater" start time: Feb 16 00:16 GMT
+Output:
+----------------------------------------------------------
+Running main() from /Users/manavmadanrawal/Dev/schrodingerssandbox/external/googletest/googletest/src/gtest_main.cc
+[==========] Running 2 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 2 tests from SlaterTest
+[ RUN      ] SlaterTest.EffectiveNuclearChargeExamples
+[       OK ] SlaterTest.EffectiveNuclearChargeExamples (0 ms)
+[ RUN      ] SlaterTest.ElementAndLayoutLookups
+[       OK ] SlaterTest.ElementAndLayoutLookups (0 ms)
+[----------] 2 tests from SlaterTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 2 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 2 tests.
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"test_slater" end time: Feb 16 00:16 GMT
+"test_slater" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Feb 16 00:16 GMT

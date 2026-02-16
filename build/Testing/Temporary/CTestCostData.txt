@@ -1,0 +1,6 @@
+ConstantsTest.BohrRadiusAngstromMatchesExpectedValue 4 0.00129099
+ConstantsTest.HartreeEnergyEvMatchesExpectedValue 4 0.000890791
+test_special_functions 4 0.000928771
+test_hydrogen 4 0.0012401
+test_slater 4 0.00107746
+---

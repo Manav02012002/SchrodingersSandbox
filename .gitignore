@@ -1,0 +1,38 @@
+# macOS
+.DS_Store
+
+# Build directories
+build/
+cmake-build-*/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+compile_commands.json
+Testing/
+
+# Binaries and libraries
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.exe
+
+# Test and app binaries (in-tree)
+schrodingers_sandbox
+test_constants
+test_hydrogen
+test_slater
+test_special_functions
+
+# Editors/IDEs
+.vscode/
+.idea/
+*.swp
+*.swo

@@ -6,12 +6,15 @@
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl3.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cmath>
+#include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -70,6 +73,8 @@ App::~App() {
 }
 
 void App::run() {
+    static bool dock_layout_built = false;
+
     while (!window_->shouldClose()) {
         window_->pollEvents();
 
@@ -77,7 +82,65 @@ void App::run() {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::DockSpaceOverViewport();
+        if (ImGui::BeginMainMenuBar()) {
+            if (ImGui::BeginMenu("View")) {
+                if (ImGui::MenuItem("Reset Layout")) {
+                    dock_layout_built = false;
+                    const ImGuiID reset_dockspace_id = ImGui::GetID("MainDockSpace");
+                    ImGui::DockBuilderRemoveNode(reset_dockspace_id);
+                }
+                ImGui::EndMenu();
+            }
+            ImGui::EndMainMenuBar();
+        }
+
+        const ImGuiID dockspace_id = ImGui::GetID("MainDockSpace");
+        ImGui::DockSpaceOverViewport(dockspace_id, ImGui::GetMainViewport());
+
+        if (!dock_layout_built) {
+            ImGuiDockNode* dockspace_node = ImGui::DockBuilderGetNode(dockspace_id);
+            const bool has_existing_layout =
+                dockspace_node != nullptr &&
+                (dockspace_node->ChildNodes[0] != nullptr ||
+                 dockspace_node->ChildNodes[1] != nullptr ||
+                 dockspace_node->Windows.Size > 0);
+
+            if (!has_existing_layout) {
+                ImGui::DockBuilderRemoveNode(dockspace_id);
+                ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
+                ImGui::DockBuilderSetNodeSize(dockspace_id, ImGui::GetMainViewport()->WorkSize);
+
+                ImGuiID left_node = dockspace_id;
+                ImGuiID center_right_node = 0;
+                ImGui::DockBuilderSplitNode(left_node, ImGuiDir_Left, 0.20f, &left_node, &center_right_node);
+
+                ImGuiID top_center_right_node = center_right_node;
+                ImGuiID bottom_center_right_node = 0;
+                ImGui::DockBuilderSplitNode(top_center_right_node,
+                                            ImGuiDir_Down,
+                                            0.30f,
+                                            &bottom_center_right_node,
+                                            &top_center_right_node);
+
+                ImGuiID center_node = top_center_right_node;
+                ImGuiID right_node = 0;
+                ImGui::DockBuilderSplitNode(center_node, ImGuiDir_Left, 0.6875f, &center_node, &right_node);
+
+                ImGuiID orbital_node = left_node;
+                ImGuiID properties_node = 0;
+                ImGui::DockBuilderSplitNode(orbital_node, ImGuiDir_Down, 0.45f, &properties_node, &orbital_node);
+
+                ImGui::DockBuilderDockWindow("Orbital Browser", orbital_node);
+                ImGui::DockBuilderDockWindow("Properties", properties_node);
+                ImGui::DockBuilderDockWindow("Energy Levels", properties_node);
+                ImGui::DockBuilderDockWindow("3D Viewport", center_node);
+                ImGui::DockBuilderDockWindow("Periodic Table", bottom_center_right_node);
+                ImGui::DockBuilderFinish(dockspace_id);
+                (void)right_node;
+            }
+
+            dock_layout_built = true;
+        }
 
         if (state_.needs_update) {
             state_.update();
@@ -86,8 +149,10 @@ void App::run() {
         ui::draw_periodic_table(state_);
         ui::draw_orbital_browser(state_);
         ui::draw_properties(state_);
+        ui::draw_energy_diagram(state_);
 
         const ui::ViewportPanelState viewport_state = ui::draw_viewport(state_, viewport_color_tex_);
+        ui::draw_status_bar(state_);
         const int new_width = std::max(1, static_cast<int>(std::floor(viewport_state.size.x)));
         const int new_height = std::max(1, static_cast<int>(std::floor(viewport_state.size.y)));
         ensureViewportTarget(new_width, new_height);
@@ -138,7 +203,74 @@ void App::initImGui() {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
-    ImGui::StyleColorsDark();
+    ImGuiStyle& style = ImGui::GetStyle();
+    ImGui::StyleColorsDark(&style);
+    style.WindowRounding = 4.0f;
+    style.FrameRounding = 3.0f;
+    style.GrabRounding = 3.0f;
+    style.FramePadding = ImVec2(6.0f, 4.0f);
+    style.ChildBorderSize = 1.0f;
+    style.ScrollbarSize = 12.0f;
+    style.ScrollbarRounding = 6.0f;
+
+    ImVec4* colors = style.Colors;
+    const ImVec4 accent_active(0.15f, 0.55f, 0.65f, 1.0f);
+    const ImVec4 accent(0.13f, 0.44f, 0.52f, 1.0f);
+    const ImVec4 accent_hovered(0.18f, 0.62f, 0.74f, 1.0f);
+
+    colors[ImGuiCol_WindowBg] = ImVec4(0.10f, 0.10f, 0.14f, 1.0f);
+    colors[ImGuiCol_TitleBg] = ImVec4(0.08f, 0.08f, 0.12f, 1.0f);
+    colors[ImGuiCol_TitleBgActive] = ImVec4(0.12f, 0.12f, 0.18f, 1.0f);
+
+    colors[ImGuiCol_FrameBgActive] = accent_active;
+    colors[ImGuiCol_ButtonActive] = accent_active;
+    colors[ImGuiCol_HeaderActive] = accent_active;
+    colors[ImGuiCol_Button] = accent;
+    colors[ImGuiCol_ButtonHovered] = accent_hovered;
+    colors[ImGuiCol_Header] = accent;
+    colors[ImGuiCol_HeaderHovered] = accent_hovered;
+    colors[ImGuiCol_CheckMark] = accent_hovered;
+    colors[ImGuiCol_SliderGrab] = accent;
+    colors[ImGuiCol_SliderGrabActive] = accent_active;
+    colors[ImGuiCol_ResizeGrip] = accent;
+    colors[ImGuiCol_ResizeGripHovered] = accent_hovered;
+    colors[ImGuiCol_ResizeGripActive] = accent_active;
+
+    colors[ImGuiCol_Tab] = ImVec4(0.10f, 0.26f, 0.30f, 1.0f);
+    colors[ImGuiCol_TabHovered] = accent_hovered;
+    colors[ImGuiCol_TabActive] = accent_active;
+    colors[ImGuiCol_TabUnfocused] = ImVec4(0.08f, 0.18f, 0.22f, 1.0f);
+    colors[ImGuiCol_TabUnfocusedActive] = ImVec4(0.12f, 0.38f, 0.45f, 1.0f);
+
+    io.Fonts->Clear();
+    constexpr float kFontSize = 15.0f;
+    const std::array<const char*, 8> font_candidates = {
+        "/Library/Fonts/Inter-Regular.ttf",
+        "/System/Library/Fonts/Supplemental/Inter.ttc",
+        "/System/Library/Fonts/Inter.ttc",
+        "/usr/share/fonts/truetype/inter/Inter-Regular.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/local/share/fonts/Inter-Regular.ttf",
+        "/usr/local/share/fonts/dejavu/DejaVuSans.ttf",
+    };
+
+    ImFont* ui_font = nullptr;
+    for (const char* path : font_candidates) {
+        if (std::filesystem::exists(path)) {
+            ui_font = io.Fonts->AddFontFromFileTTF(path, kFontSize);
+            if (ui_font != nullptr) {
+                break;
+            }
+        }
+    }
+
+    if (ui_font == nullptr) {
+        ImFontConfig font_cfg;
+        font_cfg.SizePixels = kFontSize;
+        ui_font = io.Fonts->AddFontDefault(&font_cfg);
+    }
+    io.FontDefault = ui_font;
 
     if (!ImGui_ImplGlfw_InitForOpenGL(window_->handle(), true)) {
         throw std::runtime_error("Failed to initialize ImGui GLFW backend");

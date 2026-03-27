@@ -3,6 +3,7 @@
 
 # Build directories
 build/
+build/imgui.ini
 cmake-build-*/
 
 # CMake generated files

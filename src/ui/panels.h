@@ -1,9 +1,11 @@
 #pragma once
 
 #include "ui/app_state.h"
+#include "ui/energy_diagram.h"
 #include "ui/orbital_browser.h"
 #include "ui/periodic_table.h"
 #include "ui/properties_panel.h"
+#include "ui/status_bar.h"
 
 #include <imgui.h>
 

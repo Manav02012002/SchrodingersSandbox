@@ -2,44 +2,18 @@
 
 #include "core/elements.h"
 #include "core/slater.h"
+#include "ui/ui_utils.h"
 
 #include <imgui.h>
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstdio>
 #include <string>
 
 namespace sbox::ui {
-namespace {
-
-constexpr std::array<const char*, 7> kLLabels = {"s", "p", "d", "f", "g", "h", "i"};
-
-std::string superscript_number(int value) {
-    static const std::array<const char*, 10> kDigits = {"⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"};
-
-    if (value == 0) {
-        return kDigits[0];
-    }
-
-    std::string out;
-    if (value < 0) {
-        out += "⁻";
-        value = -value;
-    }
-
-    std::string digits = std::to_string(value);
-    for (char ch : digits) {
-        out += kDigits[static_cast<std::size_t>(ch - '0')];
-    }
-    return out;
-}
-
-}  // namespace
 
 void draw_orbital_browser(AppState& state) {
-    ImGui::SetNextWindowSize(ImVec2(400, 300), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Orbital Browser")) {
         ImGui::End();
         return;

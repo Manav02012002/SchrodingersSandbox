@@ -40,11 +40,16 @@ add_executable(schrodingers_sandbox
     src/core/hydrogen.cpp
     src/core/slater.cpp
     src/core/elements.cpp
+    src/core/basis_set.cpp
+    src/core/molden_parser.cpp
     src/renderer/window.cpp
     src/renderer/shader.cpp
     src/renderer/camera.cpp
     src/ui/app.cpp
+    src/ui/ui_utils.cpp
     src/ui/panels.cpp
+    src/ui/status_bar.cpp
+    src/ui/energy_diagram.cpp
     src/ui/periodic_table.cpp
     src/ui/orbital_browser.cpp
     src/ui/properties_panel.cpp
@@ -92,9 +97,19 @@ target_include_directories(test_slater PRIVATE src)
 target_link_libraries(test_slater PRIVATE GTest::gtest_main Eigen3::Eigen)
 target_compile_options(test_slater PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(test_molden_parser
+    tests/test_molden_parser.cpp
+    src/core/basis_set.cpp
+    src/core/molden_parser.cpp
+)
+target_include_directories(test_molden_parser PRIVATE src)
+target_link_libraries(test_molden_parser PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_molden_parser PRIVATE -Wall -Wextra -Wpedantic)
+
 include(GoogleTest)
 gtest_discover_tests(test_constants)
 
 add_test(NAME test_special_functions COMMAND test_special_functions)
 add_test(NAME test_hydrogen COMMAND test_hydrogen)
 add_test(NAME test_slater COMMAND test_slater)
+add_test(NAME test_molden_parser COMMAND test_molden_parser)

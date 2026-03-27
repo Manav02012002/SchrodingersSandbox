@@ -7,7 +7,6 @@ namespace sbox::ui {
 ViewportPanelState draw_viewport(AppState& state, unsigned int texture_id) {
     ViewportPanelState viewport{};
 
-    ImGui::SetNextWindowSize(ImVec2(400, 300), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("3D Viewport")) {
         const char* mode_items[] = {"Volume", "Isosurface", "Phase Isosurface"};
         ImGui::SetNextItemWidth(220.0f);
@@ -31,14 +30,15 @@ ViewportPanelState draw_viewport(AppState& state, unsigned int texture_id) {
         ImGui::Separator();
 
         viewport.size = ImGui::GetContentRegionAvail();
-        viewport.hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 
         if (viewport.size.x > 0.0f && viewport.size.y > 0.0f && texture_id != 0U) {
             ImGui::Image((ImTextureID)(intptr_t)texture_id,
                          viewport.size,
                          ImVec2(0.0f, 1.0f),
                          ImVec2(1.0f, 0.0f));
+            viewport.hovered = ImGui::IsItemHovered();
         } else {
+            viewport.hovered = false;
             ImGui::TextUnformatted("Viewport unavailable.");
         }
     }

@@ -353,27 +353,13 @@ void main() {
         vec3 accum_color = vec3(0.0);
         float accum_alpha = 0.0;
 
-        // First pass: find max density along this ray for normalisation
-        float ray_max = 0.0;
+        // Single pass: accumulate colour using precomputed CPU max density.
         for (int i = 0; i < NUM_STEPS; i++) {
             float t = t_near + (float(i) + 0.5) * step_size;
             vec3 pos = ray_origin + t * ray_dir;
             float val = psi(pos);
             float dens = val * val;
-            ray_max = max(ray_max, dens);
-        }
-        if (ray_max < 1e-20) {
-            frag_color = vec4(bg, 1.0);
-            return;
-        }
-
-        // Second pass: accumulate colour
-        for (int i = 0; i < NUM_STEPS; i++) {
-            float t = t_near + (float(i) + 0.5) * step_size;
-            vec3 pos = ray_origin + t * ray_dir;
-            float val = psi(pos);
-            float dens = val * val;
-            float normalized = dens / ray_max;
+            float normalized = clamp(dens / u_max_density, 0.0, 1.0);
             float mapped = pow(normalized, u_gamma);
 
             // Colour ramp: dark blue -> cyan -> white

@@ -1,11 +1,11 @@
 #include "ui/periodic_table.h"
 
 #include "core/elements.h"
+#include "ui/ui_utils.h"
 
 #include <imgui.h>
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <cfloat>
 #include <string>
@@ -13,49 +13,11 @@
 namespace sbox::ui {
 namespace {
 
-constexpr std::array<const char*, 7> kLLabels = {"s", "p", "d", "f", "g", "h", "i"};
-
 std::string to_lower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
     });
     return value;
-}
-
-std::string superscript_number(int value) {
-    static const std::array<const char*, 10> kDigits = {"⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"};
-
-    if (value == 0) {
-        return kDigits[0];
-    }
-
-    std::string out;
-    if (value < 0) {
-        out += "⁻";
-        value = -value;
-    }
-
-    std::string digits = std::to_string(value);
-    for (char ch : digits) {
-        out += kDigits[static_cast<std::size_t>(ch - '0')];
-    }
-    return out;
-}
-
-std::string config_to_string(const sbox::slater::ElectronConfig& config) {
-    std::string out;
-    for (std::size_t i = 0; i < config.size(); ++i) {
-        const auto& subshell = config[i];
-        if (i > 0) {
-            out += " ";
-        }
-
-        out += std::to_string(subshell.n);
-        const int l = std::clamp(subshell.l, 0, static_cast<int>(kLLabels.size() - 1));
-        out += kLLabels[static_cast<std::size_t>(l)];
-        out += superscript_number(subshell.electrons);
-    }
-    return out;
 }
 
 bool matches_filter(const sbox::elements::Element& element, const std::string& filter) {
@@ -119,7 +81,6 @@ ImVec4 brighten(ImVec4 color, float amount) {
 }  // namespace
 
 void draw_periodic_table(AppState& state) {
-    ImGui::SetNextWindowSize(ImVec2(400, 300), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Periodic Table")) {
         ImGui::End();
         return;

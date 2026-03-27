@@ -215,6 +215,7 @@ sbox::basis::MOData parse_molden_file(const std::string& filepath, const ParseOp
             if (tokens.size() < 6) {
                 continue;
             }
+            result.atomic_numbers.push_back(parse_int_token(tokens[2]));
             const double x = parse_double_token(tokens[tokens.size() - 3]);
             const double y = parse_double_token(tokens[tokens.size() - 2]);
             const double z = parse_double_token(tokens[tokens.size() - 1]);

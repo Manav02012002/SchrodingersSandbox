@@ -17,5 +17,6 @@ struct ViewportPanelState {
 };
 
 ViewportPanelState draw_viewport(AppState& state, unsigned int texture_id);
+const char* mo_label_for_index(const AppState& state, int mo_index, int homo_index);
 
 }  // namespace sbox::ui

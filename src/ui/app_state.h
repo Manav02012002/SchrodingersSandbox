@@ -7,6 +7,11 @@
 
 namespace sbox::ui {
 
+enum class ViewMode : int {
+    AtomicOrbital = 0,
+    MolecularOrbital = 1,
+};
+
 struct AppState {
     int selected_Z = 1;
     int selected_orbital_index = -1;  // -1 means "last orbital" (valence)
@@ -16,6 +21,16 @@ struct AppState {
     int render_mode = 0;  // 0=volume, 1=isosurface, 2=phase isosurface
     float iso_value = 0.01f;
     float gamma = 0.4f;
+    ViewMode view_mode = ViewMode::AtomicOrbital;
+    int selected_mo = -1;
+    int num_mo = 0;
+    int homo_index = -1;
+    float mol_bound_radius = 10.0f;
+    int mol_render_mode = 0;
+    int mol_num_basis = 0;
+    double mol_total_energy_h = 0.0;
+    double mol_homo_lumo_gap_ev = 0.0;
+    bool mol_has_mo_summary = false;
 
     int current_n = 1;
     int current_l = 0;

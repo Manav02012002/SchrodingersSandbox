@@ -25,6 +25,7 @@ struct BasisSet {
 
 struct MOData {
     BasisSet basis;
+    std::vector<int> atomic_numbers;
     std::vector<Eigen::Vector3d> atom_positions;
     Eigen::MatrixXd coefficients;  // num_basis × num_mo
     Eigen::VectorXd energies;  // num_mo

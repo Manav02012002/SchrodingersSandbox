@@ -194,7 +194,7 @@ float radial_wavefunction(int n, int l, float Zeff, float r) {
     float log_N = 0.5 * (3.0 * log(2.0 * Zeff / nf)
                        + log_factorial(idx1)
                        - log(2.0 * nf)
-                       - 3.0 * log_factorial(idx2));
+                       - log_factorial(idx2));
     float normalization = exp(log_N);
 
     float laguerre = assoc_laguerre(n - l - 1, float(2 * l + 1), rho);

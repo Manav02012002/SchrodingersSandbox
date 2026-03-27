@@ -10,6 +10,7 @@ set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(external/glfw)
+add_subdirectory(external/nfd)
 
 find_package(OpenGL REQUIRED)
 find_package(Eigen3 3.4 QUIET)
@@ -34,28 +35,47 @@ target_link_libraries(imgui PUBLIC glfw glad OpenGL::GL)
 target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_LOADER_CUSTOM)
 target_compile_options(imgui PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-include glad/gl.h>)
 
+add_library(nlohmann_json INTERFACE)
+target_include_directories(nlohmann_json INTERFACE external/nlohmann)
+
 add_executable(schrodingers_sandbox
     src/main.cpp
     src/core/special_functions.cpp
     src/core/hydrogen.cpp
     src/core/slater.cpp
     src/core/elements.cpp
+    src/core/gaussian_eval.cpp
+    src/core/covalent_radii.cpp
+    src/core/molecular_system.cpp
+    src/core/symmetry.cpp
+    src/core/zmatrix.cpp
     src/core/basis_set.cpp
     src/core/molden_parser.cpp
+    src/io/cube_io.cpp
+    src/io/fchk_io.cpp
+    src/io/project_io.cpp
+    src/io/sdf_io.cpp
+    src/io/xyz_io.cpp
     src/renderer/window.cpp
     src/renderer/shader.cpp
     src/renderer/camera.cpp
+    src/renderer/basis_texture.cpp
+    src/renderer/mol_renderer.cpp
+    src/renderer/volume_texture.cpp
     src/ui/app.cpp
     src/ui/ui_utils.cpp
     src/ui/panels.cpp
     src/ui/status_bar.cpp
     src/ui/energy_diagram.cpp
+    src/ui/mo_diagram.cpp
+    src/ui/file_dialog.cpp
+    src/ui/molecule_info.cpp
     src/ui/periodic_table.cpp
     src/ui/orbital_browser.cpp
     src/ui/properties_panel.cpp
 )
 target_include_directories(schrodingers_sandbox PRIVATE src)
-target_link_libraries(schrodingers_sandbox PRIVATE imgui glad glfw OpenGL::GL Eigen3::Eigen)
+target_link_libraries(schrodingers_sandbox PRIVATE imgui glad glfw OpenGL::GL Eigen3::Eigen nlohmann_json nfd)
 target_compile_options(schrodingers_sandbox PRIVATE -Wall -Wextra -Wpedantic)
 
 add_custom_command(TARGET schrodingers_sandbox POST_BUILD
@@ -106,6 +126,116 @@ target_include_directories(test_molden_parser PRIVATE src)
 target_link_libraries(test_molden_parser PRIVATE GTest::gtest_main Eigen3::Eigen)
 target_compile_options(test_molden_parser PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(test_molecular_system
+    tests/test_molecular_system.cpp
+    src/core/covalent_radii.cpp
+    src/core/molecular_system.cpp
+    src/core/elements.cpp
+)
+target_include_directories(test_molecular_system PRIVATE src)
+target_link_libraries(test_molecular_system PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_molecular_system PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_bond_perception
+    tests/test_bond_perception.cpp
+    src/core/covalent_radii.cpp
+    src/core/molecular_system.cpp
+    src/core/elements.cpp
+)
+target_include_directories(test_bond_perception PRIVATE src)
+target_link_libraries(test_bond_perception PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_bond_perception PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_xyz_io
+    tests/test_xyz_io.cpp
+    src/core/covalent_radii.cpp
+    src/core/molecular_system.cpp
+    src/core/elements.cpp
+    src/io/xyz_io.cpp
+)
+target_include_directories(test_xyz_io PRIVATE src)
+target_link_libraries(test_xyz_io PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_xyz_io PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_sdf_io
+    tests/test_sdf_io.cpp
+    src/core/covalent_radii.cpp
+    src/core/molecular_system.cpp
+    src/core/elements.cpp
+    src/io/sdf_io.cpp
+)
+target_include_directories(test_sdf_io PRIVATE src)
+target_link_libraries(test_sdf_io PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_sdf_io PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_cube_io
+    tests/test_cube_io.cpp
+    src/io/cube_io.cpp
+)
+target_include_directories(test_cube_io PRIVATE src)
+target_link_libraries(test_cube_io PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_cube_io PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_fchk_io
+    tests/test_fchk_io.cpp
+    src/io/fchk_io.cpp
+)
+target_include_directories(test_fchk_io PRIVATE src)
+target_link_libraries(test_fchk_io PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_fchk_io PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_zmatrix
+    tests/test_zmatrix.cpp
+    src/core/covalent_radii.cpp
+    src/core/molecular_system.cpp
+    src/core/elements.cpp
+    src/core/zmatrix.cpp
+)
+target_include_directories(test_zmatrix PRIVATE src)
+target_link_libraries(test_zmatrix PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_zmatrix PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_symmetry
+    tests/test_symmetry.cpp
+    src/core/covalent_radii.cpp
+    src/core/molecular_system.cpp
+    src/core/elements.cpp
+    src/core/symmetry.cpp
+)
+target_include_directories(test_symmetry PRIVATE src)
+target_link_libraries(test_symmetry PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_symmetry PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_project_io
+    tests/test_project_io.cpp
+    src/core/covalent_radii.cpp
+    src/core/molecular_system.cpp
+    src/core/elements.cpp
+    src/io/project_io.cpp
+)
+target_include_directories(test_project_io PRIVATE src)
+target_link_libraries(test_project_io PRIVATE GTest::gtest_main Eigen3::Eigen nlohmann_json)
+target_compile_options(test_project_io PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_gaussian_eval
+    tests/test_gaussian_eval.cpp
+    src/core/basis_set.cpp
+    src/core/gaussian_eval.cpp
+)
+target_include_directories(test_gaussian_eval PRIVATE src)
+target_link_libraries(test_gaussian_eval PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_gaussian_eval PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_gpu_crossval
+    tests/test_gpu_crossval.cpp
+    src/core/basis_set.cpp
+    src/core/gaussian_eval.cpp
+    src/renderer/basis_texture.cpp
+)
+target_include_directories(test_gpu_crossval PRIVATE src external/glad/include)
+target_link_libraries(test_gpu_crossval PRIVATE GTest::gtest_main Eigen3::Eigen glad OpenGL::GL)
+target_compile_options(test_gpu_crossval PRIVATE -Wall -Wextra -Wpedantic)
+
 include(GoogleTest)
 gtest_discover_tests(test_constants)
 
@@ -113,3 +243,14 @@ add_test(NAME test_special_functions COMMAND test_special_functions)
 add_test(NAME test_hydrogen COMMAND test_hydrogen)
 add_test(NAME test_slater COMMAND test_slater)
 add_test(NAME test_molden_parser COMMAND test_molden_parser)
+add_test(NAME test_molecular_system COMMAND test_molecular_system)
+add_test(NAME test_bond_perception COMMAND test_bond_perception)
+add_test(NAME test_xyz_io COMMAND test_xyz_io)
+add_test(NAME test_sdf_io COMMAND test_sdf_io)
+add_test(NAME test_cube_io COMMAND test_cube_io)
+add_test(NAME test_fchk_io COMMAND test_fchk_io)
+add_test(NAME test_zmatrix COMMAND test_zmatrix)
+add_test(NAME test_symmetry COMMAND test_symmetry)
+add_test(NAME test_project_io COMMAND test_project_io)
+add_test(NAME test_gaussian_eval COMMAND test_gaussian_eval)
+add_test(NAME test_gpu_crossval COMMAND test_gpu_crossval)

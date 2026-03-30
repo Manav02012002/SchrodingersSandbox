@@ -1,6 +1,8 @@
 #pragma once
 
+#include "analysis/crystal_field.h"
 #include "backend/job_types.h"
+#include "chem/coordination.h"
 #include "core/elements.h"
 #include "core/slater.h"
 
@@ -27,6 +29,60 @@ enum class PropertyView : int {
 };
 
 struct AppState {
+    struct ComplexBuilderState {
+        int metal_Z = 26;
+        int oxidation_state = 2;
+        sbox::chem::CoordinationGeometry geometry = sbox::chem::CoordinationGeometry::Octahedral;
+        std::vector<std::string> site_ligands;
+        bool all_same = true;
+        std::string uniform_ligand = "water";
+        bool auto_optimize = true;
+        bool built = false;
+    };
+
+    struct SolventResult {
+        std::string solvent_name;
+        double dielectric = 0.0;
+        double total_energy = 0.0;
+        double solvation_energy_kcalmol = 0.0;
+        double dipole = 0.0;
+        double homo_eV = 0.0;
+        double lumo_eV = 0.0;
+    };
+
+    struct SolventPanelState {
+        int selected_solvent_index = 0;
+        int gas_job_id = -1;
+        int solvent_job_id = -1;
+        bool gas_done = false;
+        bool solvent_done = false;
+        bool run_requested = false;
+        sbox::backend::JobResult gas_result;
+        sbox::backend::JobResult solvent_result;
+        std::vector<SolventResult> history;
+    };
+
+    struct SpectrochemicalState {
+        struct LigandResult {
+            std::string ligand_name;
+            int job_id = -1;
+            bool complete = false;
+            double energy = 0.0;
+            double delta_eV = 0.0;
+            sbox::analysis::DOrbitalEnergies d_orbitals;
+            sbox::chem::MolecularSystem geometry;
+        };
+
+        int metal_Z = 26;
+        int oxidation_state = 2;
+        sbox::chem::CoordinationGeometry geometry = sbox::chem::CoordinationGeometry::Octahedral;
+        sbox::backend::Method method = sbox::backend::Method::GFN2_XTB;
+        std::vector<bool> ligand_selected;
+        std::vector<LigandResult> results;
+        bool series_running = false;
+        bool series_complete = false;
+    };
+
     struct ComputationState {
         sbox::backend::Method method = sbox::backend::Method::HF;
         sbox::backend::BasisSetType basis = sbox::backend::BasisSetType::STO_3G;
@@ -46,6 +102,63 @@ struct AppState {
         std::vector<float> scf_plot_energies;
     };
 
+    struct TrajectoryPlayerState {
+        int current_frame = 0;
+        bool playing = false;
+        bool looping = true;
+        float playback_speed = 1.0f;
+        float accumulator = 0.0f;
+        int total_frames = 0;
+        int last_applied_frame = -1;
+    };
+
+    struct GeometricConstraint {
+        enum class Type { FreezeAtom, FixDistance, FixAngle, FixDihedral };
+        Type type = Type::FreezeAtom;
+        std::vector<int> atom_indices;
+        double value = 0.0;
+        bool active = true;
+    };
+
+    struct PESScanState {
+        sbox::backend::JobSpec::ScanSpec::ScanCoordinate coord1;
+        sbox::backend::JobSpec::ScanSpec::ScanCoordinate coord2;
+        bool is_2d = false;
+        bool coord1_set = false;
+        bool coord2_set = false;
+        int scan_job_id = -1;
+        bool scan_running = false;
+        bool scan_complete = false;
+        sbox::backend::JobResult::ScanResult result;
+        int viewed_point = -1;
+    };
+
+    struct ReactionPathState {
+        struct TrackedCoordinate {
+            std::string label;
+            sbox::backend::JobSpec::ScanSpec::CoordType type = sbox::backend::JobSpec::ScanSpec::CoordType::Distance;
+            std::vector<int> atoms;
+            std::vector<double> values;
+        };
+
+        sbox::chem::MolecularSystem reactant;
+        sbox::chem::MolecularSystem product;
+        bool reactant_set = false;
+        bool product_set = false;
+        int num_images = 9;
+        int max_neb_steps = 50;
+        int neb_job_id = -1;
+        bool neb_running = false;
+        bool neb_complete = false;
+        sbox::backend::JobResult::NEBResult result;
+        TrajectoryPlayerState player;
+        std::vector<TrackedCoordinate> tracked;
+        bool smooth_interpolation = true;
+        int ts_frequency_job_id = -1;
+        bool ts_frequency_running = false;
+        sbox::backend::JobResult ts_frequency_result;
+    };
+
     int selected_Z = 1;
     int selected_orbital_index = -1;  // -1 means "last orbital" (valence)
     int selected_m = 0;
@@ -55,6 +168,9 @@ struct AppState {
     bool show_bond_orders = false;
     bool show_dipole = false;
     bool show_esp_surface = false;
+    bool show_complex_builder = false;
+    bool show_spectrochemical = false;
+    int color_mode = 0;
     float esp_density_iso = 0.005f;
     float esp_color_min = -0.05f;
     float esp_color_max = 0.05f;
@@ -66,17 +182,31 @@ struct AppState {
     ViewMode view_mode = ViewMode::AtomicOrbital;
     PropertyView property_view = PropertyView::Dashboard;
     int selected_mo = -1;
+    int selected_d_orbital = 0;
+    int selected_crystal_field_metal = 0;
+    bool d_orbital_high_spin = true;
+    bool d_orbital_compare_free_ion = false;
     int selected_vibrational_mode = -1;
     bool animate_vibrational_mode = false;
     int num_mo = 0;
     int homo_index = -1;
     float mol_bound_radius = 10.0f;
     int mol_render_mode = 0;
+    int lod_atoms_rendered = 0;
+    int lod_atoms_culled = 0;
+    int lod_bonds_rendered = 0;
     int mol_num_basis = 0;
     double mol_total_energy_h = 0.0;
     double mol_homo_lumo_gap_ev = 0.0;
     bool mol_has_mo_summary = false;
     ComputationState computation;
+    TrajectoryPlayerState optimization_player;
+    std::vector<GeometricConstraint> constraints;
+    PESScanState pes;
+    ReactionPathState reaction_path;
+    ComplexBuilderState complex_builder;
+    SolventPanelState solvent;
+    SpectrochemicalState spectrochemical;
 
     int current_n = 1;
     int current_l = 0;

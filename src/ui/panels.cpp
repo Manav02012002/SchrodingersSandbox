@@ -55,6 +55,19 @@ ViewportPanelState draw_viewport(AppState& state, unsigned int texture_id) {
             ImGui::SetNextItemWidth(220.0f);
             const char* mol_items[] = {"Ball-and-Stick", "Space-Filling", "Wireframe", "Stick"};
             ImGui::Combo("Molecule Style", &state.mol_render_mode, mol_items, 4);
+            ImGui::SetNextItemWidth(220.0f);
+            const char* color_items[] = {"Element (CPK)", "Chain", "Residue", "B-Factor", "Charge"};
+            ImGui::Combo("Color", &state.color_mode, color_items, 5);
+
+            ImGui::Separator();
+            ImGui::TextUnformatted("Coordination");
+            if (ImGui::Button("Complex Builder")) {
+                state.show_complex_builder = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Spectrochemical")) {
+                state.show_spectrochemical = true;
+            }
         }
 
         const char* mode_items[] = {"Volume", "Isosurface", "Phase Isosurface"};

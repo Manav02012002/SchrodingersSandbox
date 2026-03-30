@@ -7,13 +7,15 @@
 #include <array>
 #include <cstddef>
 #include <cstdio>
+#include <limits>
 #include <stdexcept>
+#include <string>
 
 namespace sbox::render {
 
 namespace {
 
-Eigen::Vector3f cpk_color(int Z) {
+Eigen::Vector3f cpk_color_internal(int Z) {
     switch (Z) {
     case 1:
         return Eigen::Vector3f(1.0f, 1.0f, 1.0f);
@@ -113,6 +115,21 @@ float vdw_radius(int Z) {
 constexpr float kBondRadiusBallAndStick = 0.15f;
 constexpr float kBondRadiusStickOnly = 0.08f;
 
+Eigen::Vector3f lerp(const Eigen::Vector3f& a, const Eigen::Vector3f& b, float t) {
+    return a + (b - a) * t;
+}
+
+Eigen::Vector3f charge_color(double charge, double max_abs_charge) {
+    if (max_abs_charge <= 1.0e-8) {
+        return Eigen::Vector3f(1.0f, 1.0f, 1.0f);
+    }
+    const float t = static_cast<float>(std::clamp(charge / max_abs_charge, -1.0, 1.0));
+    if (t < 0.0f) {
+        return lerp(Eigen::Vector3f(0.15f, 0.35f, 0.95f), Eigen::Vector3f(1.0f, 1.0f, 1.0f), t + 1.0f);
+    }
+    return lerp(Eigen::Vector3f(1.0f, 1.0f, 1.0f), Eigen::Vector3f(0.95f, 0.20f, 0.15f), t);
+}
+
 ImVec2 world_to_screen(const Eigen::Vector3f& world_pos,
                        const Eigen::Matrix4f& vp_matrix,
                        const ImVec2& viewport_pos,
@@ -172,6 +189,51 @@ void upload_bond_instances(unsigned int buffer, const std::vector<float>& data) 
 }
 
 }  // namespace
+
+Eigen::Vector3f chain_color(int chain_index) {
+    static const std::array<Eigen::Vector3f, 12> palette = {{
+        {0.12f, 0.47f, 0.71f}, {1.0f, 0.5f, 0.05f}, {0.17f, 0.63f, 0.17f}, {0.84f, 0.15f, 0.16f},
+        {0.58f, 0.40f, 0.74f}, {0.55f, 0.34f, 0.29f}, {0.89f, 0.47f, 0.76f}, {0.50f, 0.50f, 0.50f},
+        {0.74f, 0.74f, 0.13f}, {0.09f, 0.75f, 0.81f}, {0.67f, 0.43f, 0.16f}, {0.40f, 0.60f, 0.80f},
+    }};
+    const int idx = chain_index >= 0 ? chain_index % static_cast<int>(palette.size()) : 0;
+    return palette[static_cast<std::size_t>(idx)];
+}
+
+Eigen::Vector3f residue_color(const std::string& residue_name) {
+    const std::string res = residue_name;
+    if (res == "ALA") return {0.78f, 0.78f, 0.78f};
+    if (res == "ARG") return {0.07f, 0.07f, 0.94f};
+    if (res == "ASN") return {0.0f, 0.86f, 0.86f};
+    if (res == "ASP") return {0.90f, 0.04f, 0.04f};
+    if (res == "CYS") return {0.90f, 0.90f, 0.04f};
+    if (res == "GLN") return {0.0f, 0.86f, 0.86f};
+    if (res == "GLU") return {0.90f, 0.04f, 0.04f};
+    if (res == "GLY") return {0.92f, 0.92f, 0.92f};
+    if (res == "HIS") return {0.51f, 0.51f, 0.82f};
+    if (res == "ILE") return {0.06f, 0.51f, 0.06f};
+    if (res == "LEU") return {0.06f, 0.51f, 0.06f};
+    if (res == "LYS") return {0.07f, 0.07f, 0.94f};
+    if (res == "MET") return {0.90f, 0.90f, 0.04f};
+    if (res == "PHE") return {0.20f, 0.20f, 0.63f};
+    if (res == "PRO") return {0.86f, 0.59f, 0.51f};
+    if (res == "SER") return {0.98f, 0.59f, 0.04f};
+    if (res == "THR") return {0.98f, 0.59f, 0.04f};
+    if (res == "TRP") return {0.71f, 0.35f, 0.71f};
+    if (res == "TYR") return {0.20f, 0.20f, 0.63f};
+    if (res == "VAL") return {0.06f, 0.51f, 0.06f};
+    if (res == "HOH" || res == "WAT") return {0.0f, 0.0f, 1.0f};
+    return {0.5f, 0.5f, 0.5f};
+}
+
+Eigen::Vector3f bfactor_color(float b_factor, float b_min, float b_max) {
+    const float denom = std::max(1.0e-6f, b_max - b_min);
+    const float t = std::clamp((b_factor - b_min) / denom, 0.0f, 1.0f);
+    if (t < 0.5f) {
+        return lerp(Eigen::Vector3f(0.0f, 0.0f, 0.8f), Eigen::Vector3f(1.0f, 1.0f, 1.0f), t * 2.0f);
+    }
+    return lerp(Eigen::Vector3f(1.0f, 1.0f, 1.0f), Eigen::Vector3f(0.8f, 0.0f, 0.0f), (t - 0.5f) * 2.0f);
+}
 
 MolRenderer::MolRenderer() {
     atom_shader_ = std::make_unique<sbox::Shader>("data/shaders/atom_impostor.vert", "data/shaders/atom_impostor.frag");
@@ -268,16 +330,59 @@ MolRenderer::~MolRenderer() {
     }
 }
 
-void MolRenderer::upload(const sbox::chem::MolecularSystem& mol) {
+void MolRenderer::upload(const sbox::chem::MolecularSystem& mol,
+                         ColorMode color_mode,
+                         const sbox::io::PDBData* pdb_data,
+                         const std::vector<double>* charges) {
     atom_instances_.clear();
     bond_instances_.clear();
 
     atom_count_ = mol.num_atoms();
     bond_count_ = mol.num_bonds();
 
+    const bool has_pdb = pdb_data != nullptr && pdb_data->atoms.size() == mol.atoms().size();
+    float b_min = std::numeric_limits<float>::max();
+    float b_max = std::numeric_limits<float>::lowest();
+    if (has_pdb) {
+        for (const auto& atom : pdb_data->atoms) {
+            b_min = std::min(b_min, static_cast<float>(atom.b_factor));
+            b_max = std::max(b_max, static_cast<float>(atom.b_factor));
+        }
+        if (b_min == std::numeric_limits<float>::max()) {
+            b_min = 0.0f;
+            b_max = 1.0f;
+        }
+    }
+    double max_abs_charge = 0.0;
+    if (charges != nullptr) {
+        for (double q : *charges) {
+            max_abs_charge = std::max(max_abs_charge, std::abs(q));
+        }
+    }
+
     atom_instances_.reserve(static_cast<std::size_t>(atom_count_) * 8);
-    for (const sbox::chem::Atom& atom : mol.atoms()) {
-        const Eigen::Vector3f color = cpk_color(atom.Z);
+    for (std::size_t atom_index = 0; atom_index < mol.atoms().size(); ++atom_index) {
+        const sbox::chem::Atom& atom = mol.atoms()[atom_index];
+        Eigen::Vector3f color = cpk_color_internal(atom.Z);
+        if (color_mode == ColorMode::ByChain && has_pdb) {
+            int chain_index = 0;
+            const std::string chain_id = pdb_data->atoms[atom_index].chain_id;
+            for (std::size_t i = 0; i < pdb_data->chains.size(); ++i) {
+                if (pdb_data->chains[i].id == chain_id) {
+                    chain_index = static_cast<int>(i);
+                    break;
+                }
+            }
+            color = chain_color(chain_index);
+        } else if (color_mode == ColorMode::ByResidue && has_pdb) {
+            color = residue_color(pdb_data->atoms[atom_index].residue_name);
+        } else if (color_mode == ColorMode::ByBFactor && has_pdb) {
+            color = bfactor_color(static_cast<float>(pdb_data->atoms[atom_index].b_factor), b_min, b_max);
+        } else if (color_mode == ColorMode::ByCharge && charges != nullptr && atom_index < charges->size()) {
+            color = charge_color((*charges)[atom_index], max_abs_charge);
+        } else if (color_mode == ColorMode::BySecondary) {
+            color = Eigen::Vector3f(0.6f, 0.6f, 0.65f);
+        }
         atom_instances_.push_back(static_cast<float>(atom.position.x()));
         atom_instances_.push_back(static_cast<float>(atom.position.y()));
         atom_instances_.push_back(static_cast<float>(atom.position.z()));
@@ -292,8 +397,12 @@ void MolRenderer::upload(const sbox::chem::MolecularSystem& mol) {
     for (const sbox::chem::Bond& bond : mol.bonds()) {
         const sbox::chem::Atom& atom_a = mol.atom(bond.atom_i);
         const sbox::chem::Atom& atom_b = mol.atom(bond.atom_j);
-        const Eigen::Vector3f color_a = cpk_color(atom_a.Z);
-        const Eigen::Vector3f color_b = cpk_color(atom_b.Z);
+        const Eigen::Vector3f color_a(atom_instances_[static_cast<std::size_t>(bond.atom_i) * 8 + 4],
+                                      atom_instances_[static_cast<std::size_t>(bond.atom_i) * 8 + 5],
+                                      atom_instances_[static_cast<std::size_t>(bond.atom_i) * 8 + 6]);
+        const Eigen::Vector3f color_b(atom_instances_[static_cast<std::size_t>(bond.atom_j) * 8 + 4],
+                                      atom_instances_[static_cast<std::size_t>(bond.atom_j) * 8 + 5],
+                                      atom_instances_[static_cast<std::size_t>(bond.atom_j) * 8 + 6]);
 
         bond_instances_.push_back(static_cast<float>(atom_a.position.x()));
         bond_instances_.push_back(static_cast<float>(atom_a.position.y()));

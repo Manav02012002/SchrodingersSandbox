@@ -5,8 +5,12 @@
 #include "core/hydrogen.h"
 #include "core/molden_parser.h"
 #include "ui/charge_overlay.h"
+#include "ui/complex_builder.h"
 #include "ui/computation_panel.h"
+#include "ui/constraint_editor.h"
 #include "ui/context_menu.h"
+#include "ui/crystal_field_panel.h"
+#include "ui/d_orbital_viewer.h"
 #include "ui/dos_panel.h"
 #include "ui/editor_toolbar.h"
 #include "ui/esp_controls.h"
@@ -15,13 +19,17 @@
 #include "ui/mo_diagram.h"
 #include "ui/mo_diagram_plot.h"
 #include "ui/molecule_info.h"
+#include "ui/optimization_panel.h"
 #include "ui/orbital_composition_panel.h"
 #include "ui/panels.h"
+#include "ui/pes_panel.h"
 #include "ui/plot_utils.h"
 #include "ui/population_panel.h"
 #include "ui/property_dashboard.h"
 #include "ui/results_panel.h"
 #include "ui/setup_wizard.h"
+#include "ui/solvent_panel.h"
+#include "ui/spectrochemical_panel.h"
 
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
@@ -73,6 +81,112 @@ void clear_mo_summary(ui::AppState& state) {
     state.mol_total_energy_h = 0.0;
     state.mol_homo_lumo_gap_ev = 0.0;
     state.mol_has_mo_summary = false;
+}
+
+const std::vector<double>* current_charges_for_render(const std::optional<sbox::backend::JobResult>& result) {
+    if (result.has_value() && !result->mulliken_charges.empty()) {
+        return &result->mulliken_charges;
+    }
+    return nullptr;
+}
+
+bool is_transition_metal_Z(int Z) {
+    return (Z >= 21 && Z <= 30) || (Z >= 39 && Z <= 48) || (Z >= 57 && Z <= 80) || (Z >= 89 && Z <= 112);
+}
+
+int first_transition_metal_index(const sbox::chem::MolecularSystem& mol) {
+    for (int i = 0; i < mol.num_atoms(); ++i) {
+        if (is_transition_metal_Z(mol.atom(i).Z)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void draw_color_legend(const ui::AppState& state,
+                       const sbox::io::PDBData& pdb_data,
+                       const std::optional<sbox::backend::JobResult>& result,
+                       const ImVec2& viewport_pos) {
+    if (state.view_mode != ui::ViewMode::MolecularOrbital) {
+        return;
+    }
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    const ImVec2 box_min(viewport_pos.x + 12.0f, viewport_pos.y + 12.0f);
+    const ImVec2 box_max(box_min.x + 220.0f, box_min.y + 94.0f);
+    draw->AddRectFilled(box_min, box_max, IM_COL32(18, 20, 28, 210), 6.0f);
+    draw->AddRect(box_min, box_max, IM_COL32(90, 96, 110, 210), 6.0f);
+
+    auto draw_gradient = [&](float y, const Eigen::Vector3f& left, const Eigen::Vector3f& mid, const Eigen::Vector3f& right, const char* l, const char* c, const char* r) {
+        const float x0 = box_min.x + 12.0f;
+        const float width = 160.0f;
+        for (int i = 0; i < 80; ++i) {
+            const float t0 = static_cast<float>(i) / 80.0f;
+            const float t1 = static_cast<float>(i + 1) / 80.0f;
+            Eigen::Vector3f col = t0 < 0.5f
+                                      ? left + (mid - left) * (t0 * 2.0f)
+                                      : mid + (right - mid) * ((t0 - 0.5f) * 2.0f);
+            draw->AddRectFilled(ImVec2(x0 + width * t0, y), ImVec2(x0 + width * t1, y + 12.0f),
+                                IM_COL32(static_cast<int>(col.x() * 255.0f),
+                                         static_cast<int>(col.y() * 255.0f),
+                                         static_cast<int>(col.z() * 255.0f), 255));
+        }
+        draw->AddText(ImVec2(x0, y + 16.0f), IM_COL32(225, 228, 235, 230), l);
+        draw->AddText(ImVec2(x0 + 68.0f, y + 16.0f), IM_COL32(225, 228, 235, 230), c);
+        draw->AddText(ImVec2(x0 + 130.0f, y + 16.0f), IM_COL32(225, 228, 235, 230), r);
+    };
+
+    switch (static_cast<sbox::render::ColorMode>(state.color_mode)) {
+    case sbox::render::ColorMode::ByChain: {
+        draw->AddText(ImVec2(box_min.x + 12.0f, box_min.y + 8.0f), IM_COL32(230, 234, 242, 240), "Chains");
+        const int limit = std::min<int>(static_cast<int>(pdb_data.chains.size()), 5);
+        for (int i = 0; i < limit; ++i) {
+            const Eigen::Vector3f col = sbox::render::chain_color(i);
+            const ImU32 c = IM_COL32(static_cast<int>(col.x() * 255.0f),
+                                     static_cast<int>(col.y() * 255.0f),
+                                     static_cast<int>(col.z() * 255.0f), 255);
+            const float y = box_min.y + 30.0f + i * 12.0f;
+            draw->AddRectFilled(ImVec2(box_min.x + 12.0f, y), ImVec2(box_min.x + 24.0f, y + 8.0f), c, 2.0f);
+            const std::string label = "Chain " + (pdb_data.chains[i].id.empty() ? std::string("?") : pdb_data.chains[i].id);
+            draw->AddText(ImVec2(box_min.x + 30.0f, y - 3.0f), IM_COL32(225, 228, 235, 230), label.c_str());
+        }
+        break;
+    }
+    case sbox::render::ColorMode::ByResidue: {
+        draw->AddText(ImVec2(box_min.x + 12.0f, box_min.y + 8.0f), IM_COL32(230, 234, 242, 240), "Residues");
+        const std::array<const char*, 5> residues = {"ALA", "ASP", "LYS", "SER", "HOH"};
+        for (int i = 0; i < static_cast<int>(residues.size()); ++i) {
+            const Eigen::Vector3f col = sbox::render::residue_color(residues[static_cast<std::size_t>(i)]);
+            const ImU32 c = IM_COL32(static_cast<int>(col.x() * 255.0f),
+                                     static_cast<int>(col.y() * 255.0f),
+                                     static_cast<int>(col.z() * 255.0f), 255);
+            const float y = box_min.y + 30.0f + i * 12.0f;
+            draw->AddRectFilled(ImVec2(box_min.x + 12.0f, y), ImVec2(box_min.x + 24.0f, y + 8.0f), c, 2.0f);
+            draw->AddText(ImVec2(box_min.x + 30.0f, y - 3.0f), IM_COL32(225, 228, 235, 230), residues[static_cast<std::size_t>(i)]);
+        }
+        break;
+    }
+    case sbox::render::ColorMode::ByBFactor:
+        draw->AddText(ImVec2(box_min.x + 12.0f, box_min.y + 8.0f), IM_COL32(230, 234, 242, 240), "B-Factor");
+        draw_gradient(box_min.y + 32.0f,
+                      Eigen::Vector3f(0.0f, 0.0f, 0.8f),
+                      Eigen::Vector3f(1.0f, 1.0f, 1.0f),
+                      Eigen::Vector3f(0.8f, 0.0f, 0.0f),
+                      "low", "mid", "high");
+        break;
+    case sbox::render::ColorMode::ByCharge:
+        draw->AddText(ImVec2(box_min.x + 12.0f, box_min.y + 8.0f), IM_COL32(230, 234, 242, 240), "Charge");
+        draw_gradient(box_min.y + 32.0f,
+                      Eigen::Vector3f(0.15f, 0.35f, 0.95f),
+                      Eigen::Vector3f(1.0f, 1.0f, 1.0f),
+                      Eigen::Vector3f(0.95f, 0.20f, 0.15f),
+                      "-", "0", "+");
+        if (!result.has_value() || result->mulliken_charges.empty()) {
+            draw->AddText(ImVec2(box_min.x + 12.0f, box_min.y + 70.0f), IM_COL32(225, 160, 120, 230), "No charges loaded");
+        }
+        break;
+    default:
+        break;
+    }
 }
 
 std::optional<sbox::basis::MOData> mo_data_from_fchk(const sbox::io::FchkData& fchk) {
@@ -231,6 +345,48 @@ void App::run() {
         const std::vector<int> completed_jobs = backend_.poll_completed();
         for (int job_id : completed_jobs) {
             const sbox::backend::JobResult* job_result = backend_.result(job_id);
+            if (job_id == state_.solvent.gas_job_id && job_result != nullptr) {
+                state_.solvent.gas_result = *job_result;
+                state_.solvent.gas_done = true;
+                continue;
+            }
+            if (job_id == state_.pes.scan_job_id && job_result != nullptr) {
+                state_.pes.result = job_result->scan_result;
+                state_.pes.scan_running = false;
+                state_.pes.scan_complete = job_result->has_scan;
+                if (!state_.pes.result.geometries.empty()) {
+                    state_.pes.viewed_point = std::clamp(
+                        state_.pes.viewed_point,
+                        0,
+                        static_cast<int>(state_.pes.result.geometries.size()) - 1);
+                }
+                continue;
+            }
+            if (job_id == state_.solvent.solvent_job_id && job_result != nullptr) {
+                state_.solvent.solvent_result = *job_result;
+                state_.solvent.solvent_done = true;
+                if (state_.solvent.gas_done && state_.solvent.solvent_result.converged() && state_.solvent.gas_result.converged()) {
+                    const auto& solvent = state_.solvent.solvent_result;
+                    const auto& gas = state_.solvent.gas_result;
+                    const auto& opt = state_.solvent.selected_solvent_index;
+                    const std::array<std::pair<const char*, double>, 10> solvents = {{
+                        {"Gas Phase", 1.0}, {"Water", 78.4}, {"DMSO", 46.7}, {"Acetonitrile", 35.7},
+                        {"Methanol", 32.7}, {"Ethanol", 24.3}, {"DCM", 8.9}, {"THF", 7.6},
+                        {"Toluene", 2.4}, {"Hexane", 1.9}
+                    }};
+                    const auto& sel = solvents[static_cast<std::size_t>(std::clamp(opt, 0, static_cast<int>(solvents.size()) - 1))];
+                    state_.solvent.history.push_back({
+                        sel.first,
+                        sel.second,
+                        solvent.total_energy,
+                        (solvent.total_energy - gas.total_energy) * 627.509,
+                        solvent.dipole_moment.norm(),
+                        solvent.homo_index() >= 0 ? solvent.mo_data.energies(solvent.homo_index()) * 27.2114 : 0.0,
+                        solvent.lumo_index() >= 0 ? solvent.mo_data.energies(solvent.lumo_index()) * 27.2114 : 0.0
+                    });
+                }
+                continue;
+            }
             state_.computation.active_job_id = job_id;
             state_.computation.job_running = false;
             state_.computation.job_completed = true;
@@ -241,6 +397,14 @@ void App::run() {
                 if (job_result->status == sbox::backend::JobStatus::Converged) {
                     try {
                         applyBackendResult(*job_result);
+                        if (job_result->has_mo_data && first_transition_metal_index(current_molecule_) >= 0) {
+                            run_crystal_field_analysis();
+                            if (has_d_orbital_analysis_) {
+                                message_popup_title_ = "Crystal Field Analysis";
+                                message_popup_text_ = "Crystal field analysis available — see Crystal Field Diagram and d-Orbital Viewer.";
+                                open_message_popup_ = true;
+                            }
+                        }
                     } catch (const std::exception& ex) {
                         state_.computation.last_error = ex.what();
                     }
@@ -260,10 +424,11 @@ void App::run() {
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("New Molecule")) {
                     current_molecule_.clear();
+                    current_pdb_data_ = sbox::io::PDBData{};
                     current_molecule_.set_name("Untitled");
                     editor_state_.commands.clear();
                     editor_state_.selection.clear();
-                    mol_renderer_.upload(current_molecule_);
+                    uploadCurrentMoleculeToRenderers();
                     state_.view_mode = ui::ViewMode::MolecularOrbital;
                     has_mo_data_ = false;
                     has_cube_data_ = false;
@@ -292,6 +457,16 @@ void App::run() {
                         std::cerr << "Failed to load XYZ file: " << ex.what() << '\n';
                     }
                 }
+                if (ImGui::MenuItem("Open Trajectory...")) {
+                    try {
+                        const std::string path = ui::open_file_dialog("Open Trajectory File", "xyz");
+                        if (!path.empty()) {
+                            loadTrajectoryFile(path);
+                        }
+                    } catch (const std::exception& ex) {
+                        std::cerr << "Failed to load trajectory file: " << ex.what() << '\n';
+                    }
+                }
                 if (ImGui::MenuItem("Open SDF...")) {
                     try {
                         const std::string path = ui::open_file_dialog("Open SDF File", "sdf,mol");
@@ -300,6 +475,16 @@ void App::run() {
                         }
                     } catch (const std::exception& ex) {
                         std::cerr << "Failed to load SDF file: " << ex.what() << '\n';
+                    }
+                }
+                if (ImGui::MenuItem("Open PDB...")) {
+                    try {
+                        const std::string path = ui::open_file_dialog("Open PDB File", "pdb,ent");
+                        if (!path.empty()) {
+                            loadPDBFile(path);
+                        }
+                    } catch (const std::exception& ex) {
+                        std::cerr << "Failed to load PDB file: " << ex.what() << '\n';
                     }
                 }
                 if (ImGui::MenuItem("Open Cube...")) {
@@ -370,7 +555,68 @@ void App::run() {
                 }
                 ImGui::EndMenu();
             }
+
+            if (ImGui::BeginMenu("Chemistry")) {
+                if (ImGui::MenuItem("Complex Builder...")) {
+                    state_.show_complex_builder = true;
+                }
+                if (ImGui::MenuItem("Crystal Field Analysis")) {
+                    run_crystal_field_analysis();
+                }
+                if (ImGui::MenuItem("Spectrochemical Series...")) {
+                    state_.show_spectrochemical = true;
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Detect Metal Center")) {
+                    detect_metal_center();
+                }
+                ImGui::EndMenu();
+            }
             ImGui::EndMainMenuBar();
+        }
+
+        if (open_message_popup_) {
+            ImGui::OpenPopup("##chem_message_popup");
+            open_message_popup_ = false;
+        }
+        if (ImGui::BeginPopupModal("##chem_message_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("%s", message_popup_title_.c_str());
+            ImGui::Separator();
+            ImGui::TextWrapped("%s", message_popup_text_.c_str());
+            if (ImGui::Button("OK", ImVec2(120.0f, 0.0f))) {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+
+        if (open_metal_picker_popup_) {
+            ImGui::OpenPopup("##metal_picker_popup");
+            open_metal_picker_popup_ = false;
+        }
+        if (ImGui::BeginPopupModal("##metal_picker_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextUnformatted("Multiple transition metals detected.");
+            ImGui::TextUnformatted("Choose the metal center to analyze:");
+            ImGui::Separator();
+            for (int atom_index : detected_metal_choices_) {
+                const auto& atom = current_molecule_.atom(atom_index);
+                char label[64];
+                std::snprintf(label, sizeof(label), "%s%d", sbox::elements::get_element(atom.Z).symbol, atom_index + 1);
+                if (ImGui::Selectable(label)) {
+                    current_metal_index_ = atom_index;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            if (ImGui::Button("Use First")) {
+                if (!detected_metal_choices_.empty()) {
+                    current_metal_index_ = detected_metal_choices_.front();
+                }
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
         }
 
         const ImGuiID dockspace_id = ImGui::GetID("MainDockSpace");
@@ -417,6 +663,8 @@ void App::run() {
                 ImGui::DockBuilderDockWindow("Atomic Properties", properties_node);
                 ImGui::DockBuilderDockWindow("Energy Levels", properties_node);
                 ImGui::DockBuilderDockWindow("MO Energy Diagram", properties_node);
+                ImGui::DockBuilderDockWindow("Crystal Field Diagram", properties_node);
+                ImGui::DockBuilderDockWindow("d-Orbital Viewer", properties_node);
                 ImGui::DockBuilderDockWindow("Density of States", properties_node);
                 ImGui::DockBuilderDockWindow("Orbital Composition", properties_node);
                 ImGui::DockBuilderDockWindow("3D Viewport", center_node);
@@ -427,6 +675,9 @@ void App::run() {
                 ImGui::DockBuilderDockWindow("Bond Orders", right_node);
                 ImGui::DockBuilderDockWindow("Electrostatic Properties", right_node);
                 ImGui::DockBuilderDockWindow("IR Spectrum", right_node);
+                ImGui::DockBuilderDockWindow("Solvent Effects", right_node);
+                ImGui::DockBuilderDockWindow("Potential Energy Surface", right_node);
+                ImGui::DockBuilderDockWindow("Complex Builder", right_node);
                 ImGui::DockBuilderDockWindow("Periodic Table", bottom_center_right_node);
                 ImGui::DockBuilderFinish(dockspace_id);
             }
@@ -441,6 +692,10 @@ void App::run() {
         ui::draw_periodic_table(state_);
         if (state_.view_mode == ui::ViewMode::MolecularOrbital) {
             ui::draw_editor_toolbar(editor_state_, current_molecule_);
+            ui::draw_constraint_editor(state_, current_molecule_, editor_state_.selection);
+        }
+        if (state_.show_complex_builder) {
+            ui::draw_complex_builder(state_, current_molecule_, editor_state_.commands, ligand_library_);
         }
         ui::draw_orbital_browser(state_);
         if (state_.view_mode == ui::ViewMode::MolecularOrbital) {
@@ -457,8 +712,20 @@ void App::run() {
             }
         }
         ui::draw_computation_panel(state_, backend_);
+        ui::draw_pes_panel(state_, backend_, current_molecule_, editor_state_.selection);
+        ui::draw_solvent_panel(state_, backend_);
+        if (state_.show_spectrochemical) {
+            ui::draw_spectrochemical_panel(state_, backend_, ligand_library_);
+        }
+        if (latest_result_.has_value() && (!latest_result_->opt_history.empty() || state_.computation.job_running)) {
+            ui::draw_optimization_panel(state_, *latest_result_, current_molecule_, mol_renderer_);
+        }
         if (latest_result_.has_value() && latest_result_->converged()) {
             ui::draw_results_panel(state_, *latest_result_, current_molecule_);
+            if (has_d_orbital_analysis_) {
+                ui::draw_crystal_field_panel(state_, *latest_result_, current_molecule_);
+                ui::draw_d_orbital_viewer(state_, *latest_result_, current_molecule_, current_d_orbitals_);
+            }
             switch (state_.property_view) {
             case ui::PropertyView::Dashboard:
                 ui::draw_property_dashboard(state_, *latest_result_, current_molecule_);
@@ -500,6 +767,29 @@ void App::run() {
             } catch (const std::exception& ex) {
                 state_.computation.last_error = ex.what();
                 state_.computation.job_running = false;
+            }
+        }
+
+        if (state_.solvent.run_requested && state_.molecule_loaded) {
+            state_.solvent.run_requested = false;
+            const std::array<const char*, 10> solvent_values = {"", "water", "dmso", "acetonitrile", "methanol", "ethanol", "dcm", "thf", "toluene", "hexane"};
+            try {
+                sbox::backend::JobSpec gas_spec = makeJobSpecFromState();
+                gas_spec.solvent.clear();
+                gas_spec.properties = {
+                    sbox::backend::PropertyRequest::MullikenCharges,
+                    sbox::backend::PropertyRequest::DipoleMoment,
+                    sbox::backend::PropertyRequest::MoldenFile,
+                };
+                sbox::backend::JobSpec solv_spec = gas_spec;
+                solv_spec.solvent = solvent_values[static_cast<std::size_t>(std::clamp(state_.solvent.selected_solvent_index, 0, 9))];
+
+                state_.solvent.gas_job_id = backend_.submit(gas_spec);
+                state_.solvent.solvent_job_id = backend_.submit(solv_spec);
+                state_.solvent.gas_done = false;
+                state_.solvent.solvent_done = false;
+            } catch (const std::exception& ex) {
+                state_.computation.last_error = ex.what();
             }
         }
 
@@ -600,9 +890,38 @@ void App::run() {
                 std::to_string(current_molecule_.num_bonds());
             if (editor_signature != last_editor_signature) {
                 last_editor_signature = editor_signature;
-                mol_renderer_.upload(current_molecule_);
+                uploadCurrentMoleculeToRenderers();
                 state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
                 state_.molecule_loaded = current_molecule_.num_atoms() > 0;
+            }
+        }
+
+        static int last_color_mode = -1;
+        if (last_color_mode != state_.color_mode) {
+            last_color_mode = state_.color_mode;
+            uploadCurrentMoleculeToRenderers();
+        }
+
+        {
+            static int last_pes_job_id = -1;
+            static int last_pes_point = -1;
+            if (state_.pes.scan_complete && !state_.pes.result.geometries.empty()) {
+                const int point = std::clamp(
+                    state_.pes.viewed_point < 0 ? 0 : state_.pes.viewed_point,
+                    0,
+                    static_cast<int>(state_.pes.result.geometries.size()) - 1);
+                if (state_.pes.scan_job_id != last_pes_job_id || point != last_pes_point) {
+                    last_pes_job_id = state_.pes.scan_job_id;
+                    last_pes_point = point;
+                    state_.pes.viewed_point = point;
+                    current_molecule_ = state_.pes.result.geometries[static_cast<std::size_t>(point)];
+                    uploadCurrentMoleculeToRenderers();
+                    state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
+                    state_.molecule_loaded = current_molecule_.num_atoms() > 0;
+                }
+            } else {
+                last_pes_job_id = -1;
+                last_pes_point = -1;
             }
         }
 
@@ -672,6 +991,11 @@ void App::run() {
                 }
             }
         }
+        if (!state_.constraints.empty()) {
+            const Eigen::Matrix4f vp = camera_.projectionMatrix() * camera_.viewMatrix();
+            ui::draw_constraint_overlays(state_.constraints, current_molecule_, vp, viewport_state.pos, viewport_state.size);
+        }
+        draw_color_legend(state_, current_pdb_data_, latest_result_, viewport_state.pos);
         ui::draw_status_bar(state_);
         const int new_width = std::max(1, static_cast<int>(std::floor(viewport_state.size.x)));
         const int new_height = std::max(1, static_cast<int>(std::floor(viewport_state.size.y)));
@@ -891,6 +1215,7 @@ float App::compute_mol_bound_radius(const sbox::chem::MolecularSystem& mol) cons
 void App::applyMOData(const sbox::basis::MOData& mo_data, const std::string& name_hint) {
     current_mo_data_ = mo_data;
     current_molecule_.clear();
+    current_pdb_data_ = sbox::io::PDBData{};
     current_molecule_.set_name(name_hint);
 
     const std::size_t atom_count = std::min(current_mo_data_.atom_positions.size(), current_mo_data_.atomic_numbers.size());
@@ -900,7 +1225,7 @@ void App::applyMOData(const sbox::basis::MOData& mo_data, const std::string& nam
     current_molecule_.set_charge(state_.computation.charge);
     current_molecule_.set_multiplicity(state_.computation.multiplicity);
     current_molecule_.perceive_bonds();
-    mol_renderer_.upload(current_molecule_);
+    uploadCurrentMoleculeToRenderers();
 
     use_cube_fallback_ = !basis_textures_.upload(current_mo_data_);
     has_mo_data_ = !use_cube_fallback_;
@@ -927,7 +1252,8 @@ void App::applyMOData(const sbox::basis::MOData& mo_data, const std::string& nam
 void App::applyBackendResult(const sbox::backend::JobResult& result) {
     if (result.has_optimized_geometry) {
         current_molecule_ = result.optimized_geometry;
-        mol_renderer_.upload(current_molecule_);
+        current_pdb_data_ = sbox::io::PDBData{};
+        uploadCurrentMoleculeToRenderers();
         state_.molecule_loaded = current_molecule_.num_atoms() > 0;
         state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
     }
@@ -950,7 +1276,8 @@ void App::applyBackendResult(const sbox::backend::JobResult& result) {
             current_molecule_.add_atom({result.homo_cube.atom_Z[i], result.homo_cube.atom_pos[i], "", 0});
         }
         current_molecule_.perceive_bonds();
-        mol_renderer_.upload(current_molecule_);
+        current_pdb_data_ = sbox::io::PDBData{};
+        uploadCurrentMoleculeToRenderers();
         has_cube_data_ = true;
         has_mo_data_ = false;
         use_cube_fallback_ = true;
@@ -970,7 +1297,8 @@ void App::applyBackendResult(const sbox::backend::JobResult& result) {
             current_molecule_.add_atom({result.density_cube.atom_Z[i], result.density_cube.atom_pos[i], "", 0});
         }
         current_molecule_.perceive_bonds();
-        mol_renderer_.upload(current_molecule_);
+        current_pdb_data_ = sbox::io::PDBData{};
+        uploadCurrentMoleculeToRenderers();
         has_cube_data_ = true;
         has_mo_data_ = false;
         use_cube_fallback_ = true;
@@ -988,6 +1316,66 @@ void App::loadESPSurface(const sbox::backend::JobResult& result) {
     if (result.has_density_cube && result.has_esp_cube) {
         esp_surface_.upload(result.density_cube, result.esp_cube);
     }
+}
+
+void App::detect_metal_center() {
+    detected_metal_choices_.clear();
+    for (int i = 0; i < current_molecule_.num_atoms(); ++i) {
+        if (is_transition_metal_Z(current_molecule_.atom(i).Z)) {
+            detected_metal_choices_.push_back(i);
+        }
+    }
+
+    if (detected_metal_choices_.empty()) {
+        current_metal_index_ = -1;
+        message_popup_title_ = "Metal Detection";
+        message_popup_text_ = "No transition metal found in the molecule.";
+        open_message_popup_ = true;
+        return;
+    }
+
+    current_metal_index_ = detected_metal_choices_.front();
+    if (detected_metal_choices_.size() > 1) {
+        open_metal_picker_popup_ = true;
+    }
+}
+
+void App::run_crystal_field_analysis() {
+    if (current_molecule_.num_atoms() == 0) {
+        has_d_orbital_analysis_ = false;
+        message_popup_title_ = "Crystal Field Analysis";
+        message_popup_text_ = "No molecule loaded.";
+        open_message_popup_ = true;
+        return;
+    }
+
+    if (current_metal_index_ < 0 || current_metal_index_ >= current_molecule_.num_atoms() ||
+        !is_transition_metal_Z(current_molecule_.atom(current_metal_index_).Z)) {
+        detect_metal_center();
+        if (current_metal_index_ < 0) {
+            message_popup_title_ = "Crystal Field Analysis";
+            message_popup_text_ = "No transition metal found in the molecule.";
+            open_message_popup_ = true;
+            return;
+        }
+    }
+
+    if ((!latest_result_.has_value() || !latest_result_->has_mo_data) && current_mo_data_.coefficients.cols() == 0) {
+        has_d_orbital_analysis_ = false;
+        message_popup_title_ = "Crystal Field Analysis";
+        message_popup_text_ = "Run a calculation first (HF, DFT, or xTB).";
+        open_message_popup_ = true;
+        return;
+    }
+
+    const sbox::basis::MOData& mo_data =
+        (latest_result_.has_value() && latest_result_->has_mo_data) ? latest_result_->mo_data : current_mo_data_;
+    current_d_orbitals_ = sbox::analysis::extract_d_orbitals(mo_data, current_molecule_, current_metal_index_);
+    const sbox::chem::CoordinationGeometry geometry =
+        sbox::chem::detect_coordination_geometry(current_molecule_, current_metal_index_);
+    sbox::analysis::identify_splitting(current_d_orbitals_, geometry);
+    has_d_orbital_analysis_ = true;
+    state_.selected_crystal_field_metal = 0;
 }
 
 sbox::backend::JobSpec App::makeJobSpecFromState() const {
@@ -1021,6 +1409,36 @@ sbox::backend::JobSpec App::makeJobSpecFromState() const {
     if (spec.optimize_geometry) {
         spec.properties.push_back(sbox::backend::PropertyRequest::Optimization);
     }
+    for (const auto& constraint : state_.constraints) {
+        if (!constraint.active) {
+            continue;
+        }
+        switch (constraint.type) {
+        case ui::AppState::GeometricConstraint::Type::FreezeAtom:
+            if (!constraint.atom_indices.empty()) {
+                spec.constraints.freeze_atoms.push_back(constraint.atom_indices[0]);
+            }
+            break;
+        case ui::AppState::GeometricConstraint::Type::FixDistance:
+            if (constraint.atom_indices.size() >= 2) {
+                spec.constraints.fixed_distances.emplace_back(
+                    constraint.atom_indices[0], constraint.atom_indices[1], constraint.value);
+            }
+            break;
+        case ui::AppState::GeometricConstraint::Type::FixAngle:
+            if (constraint.atom_indices.size() >= 3) {
+                spec.constraints.fixed_angles.emplace_back(
+                    constraint.atom_indices[0], constraint.atom_indices[1], constraint.atom_indices[2], constraint.value);
+            }
+            break;
+        case ui::AppState::GeometricConstraint::Type::FixDihedral:
+            if (constraint.atom_indices.size() >= 4) {
+                spec.constraints.fixed_dihedrals.emplace_back(
+                    constraint.atom_indices[0], constraint.atom_indices[1], constraint.atom_indices[2], constraint.atom_indices[3], constraint.value);
+            }
+            break;
+        }
+    }
     return spec;
 }
 
@@ -1033,12 +1451,13 @@ void App::loadMoldenFile(const std::string& path) {
 void App::loadCubeFile(const std::string& path) {
     const sbox::io::CubeData cube = sbox::io::read_cube(path);
     current_molecule_.clear();
+    current_pdb_data_ = sbox::io::PDBData{};
     current_molecule_.set_name(std::filesystem::path(path).filename().string());
     for (std::size_t i = 0; i < cube.atom_Z.size() && i < cube.atom_pos.size(); ++i) {
         current_molecule_.add_atom({cube.atom_Z[i], cube.atom_pos[i], "", 0});
     }
     current_molecule_.perceive_bonds();
-    mol_renderer_.upload(current_molecule_);
+    uploadCurrentMoleculeToRenderers();
 
     if (!volume_texture_.upload(cube)) {
         throw std::runtime_error("Failed to upload cube volume texture");
@@ -1056,8 +1475,11 @@ void App::loadCubeFile(const std::string& path) {
 }
 
 void App::loadXYZFile(const std::string& path) {
+    current_trajectory_ = sbox::io::Trajectory{};
+    has_trajectory_ = false;
     current_molecule_ = sbox::io::read_xyz(path);
-    mol_renderer_.upload(current_molecule_);
+    current_pdb_data_ = sbox::io::PDBData{};
+    uploadCurrentMoleculeToRenderers();
     current_mo_data_ = sbox::basis::MOData{};
     has_mo_data_ = false;
     has_cube_data_ = false;
@@ -1070,9 +1492,51 @@ void App::loadXYZFile(const std::string& path) {
     state_.computation.multiplicity = current_molecule_.multiplicity();
 }
 
+void App::loadTrajectoryFile(const std::string& path) {
+    current_trajectory_ = sbox::io::read_trajectory_xyz(path);
+    has_trajectory_ = !current_trajectory_.empty();
+    if (!has_trajectory_) {
+        throw std::runtime_error("Trajectory file did not contain any frames");
+    }
+
+    current_molecule_ = current_trajectory_.frames.front().geometry;
+    current_molecule_.set_name(std::filesystem::path(path).filename().string());
+    current_pdb_data_ = sbox::io::PDBData{};
+    uploadCurrentMoleculeToRenderers();
+    state_.view_mode = ui::ViewMode::MolecularOrbital;
+    has_mo_data_ = false;
+    has_cube_data_ = false;
+    use_cube_fallback_ = false;
+    clear_mo_summary(state_);
+    state_.molecule_loaded = current_molecule_.num_atoms() > 0;
+    state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
+    state_.computation.charge = current_molecule_.charge();
+    state_.computation.multiplicity = current_molecule_.multiplicity();
+    state_.optimization_player = {};
+    state_.optimization_player.total_frames = current_trajectory_.num_frames();
+}
+
 void App::loadSDFFile(const std::string& path) {
     current_molecule_ = sbox::io::read_sdf(path);
-    mol_renderer_.upload(current_molecule_);
+    current_pdb_data_ = sbox::io::PDBData{};
+    uploadCurrentMoleculeToRenderers();
+    current_mo_data_ = sbox::basis::MOData{};
+    has_mo_data_ = false;
+    has_cube_data_ = false;
+    use_cube_fallback_ = false;
+    state_.molecule_loaded = current_molecule_.num_atoms() > 0;
+    state_.view_mode = ui::ViewMode::MolecularOrbital;
+    state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
+    clear_mo_summary(state_);
+    state_.computation.charge = current_molecule_.charge();
+    state_.computation.multiplicity = current_molecule_.multiplicity();
+}
+
+void App::loadPDBFile(const std::string& path) {
+    current_pdb_data_ = sbox::io::read_pdb(path);
+    current_molecule_ = current_pdb_data_.to_molecular_system();
+    current_molecule_.set_name(current_pdb_data_.title.empty() ? std::filesystem::path(path).filename().string() : current_pdb_data_.title);
+    uploadCurrentMoleculeToRenderers();
     current_mo_data_ = sbox::basis::MOData{};
     has_mo_data_ = false;
     has_cube_data_ = false;
@@ -1088,6 +1552,7 @@ void App::loadSDFFile(const std::string& path) {
 void App::loadFchkFile(const std::string& path) {
     const sbox::io::FchkData fchk = sbox::io::read_fchk(path);
     current_molecule_.clear();
+    current_pdb_data_ = sbox::io::PDBData{};
     current_molecule_.set_name(fchk.title);
     current_molecule_.set_charge(fchk.charge);
     current_molecule_.set_multiplicity(fchk.multiplicity);
@@ -1100,7 +1565,7 @@ void App::loadFchkFile(const std::string& path) {
                                     0});
     }
     current_molecule_.perceive_bonds();
-    mol_renderer_.upload(current_molecule_);
+    uploadCurrentMoleculeToRenderers();
 
     current_mo_data_ = sbox::basis::MOData{};
     const std::optional<sbox::basis::MOData> maybe_mo = mo_data_from_fchk(fchk);
@@ -1276,11 +1741,32 @@ void App::renderViewportToTexture() {
         return;
     }
 
+    state_.lod_atoms_rendered = 0;
+    state_.lod_atoms_culled = 0;
+    state_.lod_bonds_rendered = 0;
+
     if (mol_renderer_.has_data()) {
-        mol_renderer_.render(camera_.viewMatrix(),
-                             camera_.projectionMatrix(),
-                             camera_.camera_position(),
-                             static_cast<sbox::render::MolRenderMode>(state_.mol_render_mode));
+        if (current_molecule_.num_atoms() > 200) {
+            lod_renderer_.render(camera_.viewMatrix(),
+                                 camera_.projectionMatrix(),
+                                 camera_.camera_position(),
+                                 static_cast<sbox::render::MolRenderMode>(state_.mol_render_mode),
+                                 current_molecule_,
+                                 static_cast<sbox::render::ColorMode>(state_.color_mode),
+                                 current_pdb_data_.atoms.empty() ? nullptr : &current_pdb_data_,
+                                 current_charges_for_render(latest_result_));
+            state_.lod_atoms_rendered = lod_renderer_.atoms_rendered();
+            state_.lod_atoms_culled = lod_renderer_.atoms_culled();
+            state_.lod_bonds_rendered = lod_renderer_.bonds_rendered();
+        } else {
+            mol_renderer_.render(camera_.viewMatrix(),
+                                 camera_.projectionMatrix(),
+                                 camera_.camera_position(),
+                                 static_cast<sbox::render::MolRenderMode>(state_.mol_render_mode));
+            state_.lod_atoms_rendered = current_molecule_.num_atoms();
+            state_.lod_atoms_culled = 0;
+            state_.lod_bonds_rendered = current_molecule_.num_bonds();
+        }
         if (!editor_state_.selection.empty()) {
             mol_renderer_.render_selection(camera_.viewMatrix(),
                                            camera_.projectionMatrix(),
@@ -1388,6 +1874,17 @@ void App::renderViewportToTexture() {
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void App::uploadCurrentMoleculeToRenderers() {
+    has_d_orbital_analysis_ = false;
+    current_d_orbitals_ = {};
+    current_metal_index_ = -1;
+    const auto color_mode = static_cast<sbox::render::ColorMode>(state_.color_mode);
+    const sbox::io::PDBData* pdb_ptr = current_pdb_data_.atoms.empty() ? nullptr : &current_pdb_data_;
+    const std::vector<double>* charges = current_charges_for_render(latest_result_);
+    mol_renderer_.upload(current_molecule_, color_mode, pdb_ptr, charges);
+    lod_renderer_.rebuild(current_molecule_, color_mode, pdb_ptr, charges);
 }
 
 }  // namespace sbox

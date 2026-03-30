@@ -41,6 +41,12 @@ void draw_status_bar(const AppState& state) {
     ImGui::TextUnformatted(" | ");
     ImGui::SameLine();
     ImGui::Text("FPS: %.1f", fps);
+    if (state.view_mode == ViewMode::MolecularOrbital && state.molecule_loaded && state.lod_atoms_rendered > 0) {
+        ImGui::SameLine();
+        ImGui::TextUnformatted(" | ");
+        ImGui::SameLine();
+        ImGui::Text("Rendered: %d/%d atoms", state.lod_atoms_rendered, state.lod_atoms_rendered + state.lod_atoms_culled);
+    }
 
     ImGui::End();
 }

@@ -2,6 +2,7 @@
 """PySCF driver for Schrödinger's Sandbox."""
 
 import json
+import math
 import os
 import sys
 import time
@@ -189,6 +190,145 @@ def _trim_vibrational_data(mol, frequencies_cm1, normal_modes=None, ir_intensiti
     return trimmed_freqs, trimmed_modes, trimmed_intensities
 
 
+def _write_constraints_file(job, output_dir):
+    constraints = job.get("constraints")
+    if not constraints:
+        return ""
+
+    lines = []
+    for idx in constraints.get("freeze_atoms", []):
+        lines.append("$freeze")
+        lines.append(f"xyz {int(idx) + 1}")
+        lines.append("$end")
+    for dist in constraints.get("fix_distances", []):
+        if len(dist) != 3:
+            continue
+        lines.append("$set")
+        lines.append(
+            f"distance {int(dist[0]) + 1} {int(dist[1]) + 1} {float(dist[2]) * 0.529177:.10f}"
+        )
+        lines.append("$end")
+    for angle in constraints.get("fix_angles", []):
+        if len(angle) != 4:
+            continue
+        lines.append("$set")
+        lines.append(
+            f"angle {int(angle[0]) + 1} {int(angle[1]) + 1} {int(angle[2]) + 1} "
+            f"{math.degrees(float(angle[3])):.10f}"
+        )
+        lines.append("$end")
+    for dihedral in constraints.get("fix_dihedrals", []):
+        if len(dihedral) != 5:
+            continue
+        lines.append("$set")
+        lines.append(
+            f"dihedral {int(dihedral[0]) + 1} {int(dihedral[1]) + 1} {int(dihedral[2]) + 1} {int(dihedral[3]) + 1} "
+            f"{math.degrees(float(dihedral[4])):.10f}"
+        )
+        lines.append("$end")
+
+    if not lines:
+        return ""
+
+    constraints_path = os.path.join(output_dir, "constraints.txt")
+    with open(constraints_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return constraints_path
+
+
+def _append_xyz_frame(traj_path, mol, step, energy):
+    coords = np.asarray(mol.atom_coords(unit="Bohr"), dtype=float)
+    natm = mol.natm
+    with open(traj_path, "a", encoding="utf-8") as tf:
+        tf.write(f"{natm}\n")
+        tf.write(f"Step {step}, E = {float(energy):.10f} Hartree\n")
+        for i in range(natm):
+            x, y, z = coords[i] * 0.529177
+            tf.write(f"{mol.atom_symbol(i)} {x:.10f} {y:.10f} {z:.10f}\n")
+
+
+def _run_optimization(mf, mol, job, output_dir, progress_path, result, properties, method, solvent, molden_tools):
+    from pyscf.geomopt.geometric_solver import optimize as geom_optimize
+
+    traj_path = os.path.join(output_dir, "trajectory.xyz")
+    with open(traj_path, "w", encoding="utf-8"):
+        pass
+
+    constraints_path = _write_constraints_file(job, output_dir)
+    opt_history = []
+    step_counter = [0]
+
+    def opt_callback(envs):
+        step = step_counter[0]
+        step_counter[0] += 1
+        current_mol = envs.get("mol", mol)
+        energy = float(envs.get("energy", envs.get("e_tot", 0.0)))
+        grad_rms = float(envs.get("gradientRms", envs.get("gradient_rms", 0.0)))
+        grad_max = float(envs.get("gradientMax", envs.get("gradient_max", 0.0)))
+        step_size = float(envs.get("step", envs.get("step_size", 0.0)))
+        coords = np.asarray(current_mol.atom_coords(unit="Bohr"), dtype=float).tolist()
+        atoms_list = [[int(current_mol.atom_charge(i)), [float(v) for v in coords[i]]] for i in range(current_mol.natm)]
+
+        opt_history.append(
+            {
+                "step": step,
+                "energy": energy,
+                "gradient_rms": grad_rms,
+                "gradient_max": grad_max,
+                "step_size": step_size,
+                "geometry": atoms_list,
+            }
+        )
+        _write_progress(progress_path, "optimizing", step, energy, f"Opt step {step}, grad_rms={grad_rms:.6f}")
+        _append_xyz_frame(traj_path, current_mol, step, energy)
+
+    kwargs = {
+        "maxsteps": int(job.get("max_opt_steps", 100)),
+        "callback": opt_callback,
+    }
+    if constraints_path:
+        kwargs["constraints"] = constraints_path
+
+    history_path = os.path.join(output_dir, "optimization_history.json")
+    optimized_mol = None
+    final_mf = mf
+    try:
+        optimized_mol = geom_optimize(mf, **kwargs)
+        result["optimization_converged"] = True
+        opt_coords = np.asarray(optimized_mol.atom_coords(unit="Bohr"), dtype=float).tolist()
+        result["optimized_geometry"] = [
+            [int(optimized_mol.atom_charge(i)), [float(v) for v in opt_coords[i]]]
+            for i in range(optimized_mol.natm)
+        ]
+
+        _write_progress(progress_path, "final_scf", energy=result["total_energy"], message="Running SCF at optimized geometry")
+        final_mf = _build_mean_field(
+            optimized_mol,
+            method,
+            int(job.get("multiplicity", 1)),
+            int(job.get("max_scf_cycles", 200)),
+            float(job.get("scf_convergence", 1.0e-8)),
+            solvent,
+        )
+        final_mf.kernel()
+        if not getattr(final_mf, "converged", False):
+            raise RuntimeError("SCF on optimized geometry did not converge")
+        result["total_energy"] = float(final_mf.e_tot)
+
+        if "molden" in properties:
+            molden_path = os.path.join(output_dir, "result.molden")
+            molden_tools.from_scf(final_mf, molden_path)
+    except Exception as exc:
+        result["optimization_converged"] = False
+        result["error"] = f"Optimization failed: {exc}"
+    finally:
+        with open(history_path, "w", encoding="utf-8") as f:
+            json.dump(opt_history, f, indent=2)
+        result["opt_steps"] = len(opt_history)
+
+    return optimized_mol, final_mf
+
+
 def _manual_frequency_analysis(mol, hessian_matrix):
     natom = mol.natm
     masses = np.asarray(mol.atom_mass_list(), dtype=float)
@@ -322,6 +462,7 @@ def main():
         "success": False,
         "error": "",
         "total_energy": 0.0,
+        "optimization_converged": False,
         "dipole_moment": [0.0, 0.0, 0.0],
         "mulliken_charges": [],
         "lowdin_charges": [],
@@ -500,38 +641,30 @@ def main():
             )
 
         optimized_mol = None
+        final_mf = mf
         if job.get("optimize", False):
-            _write_progress(progress_path, "optimizing", energy=result["total_energy"])
             try:
-                from pyscf.geomopt.geometric_solver import optimize as geom_optimize
-
-                mol_eq = geom_optimize(mf, maxsteps=int(job.get("max_opt_steps", 100)))
-                optimized_mol = mol_eq
-                opt_coords = mol_eq.atom_coords(unit="Bohr").tolist()
-                opt_atoms = [[int(mol_eq.atom_charge(i)), [float(v) for v in opt_coords[i]]] for i in range(mol_eq.natm)]
-                result["optimized_geometry"] = opt_atoms
-                result["total_energy"] = float(getattr(mf, "e_tot", result["total_energy"]))
+                _write_progress(progress_path, "optimizing", energy=result["total_energy"])
+                optimized_mol, final_mf = _run_optimization(
+                    mf,
+                    mol,
+                    job,
+                    output_dir,
+                    progress_path,
+                    result,
+                    properties,
+                    method,
+                    solvent,
+                    molden_tools,
+                )
             except ImportError:
                 result["error"] = "geomeTRIC not installed, optimization unavailable"
-            except Exception as exc:
-                result["error"] = f"Optimization failed: {exc}"
 
         if job.get("frequencies", False):
             freq_mol = optimized_mol if optimized_mol is not None else mol
-            freq_mf = mf
-            if optimized_mol is not None:
-                _write_progress(progress_path, "rebuilding_scf", energy=result["total_energy"], message="SCF on optimized geometry")
-                freq_mf = _build_mean_field(
-                    freq_mol,
-                    method,
-                    int(job.get("multiplicity", 1)),
-                    int(job.get("max_scf_cycles", 200)),
-                    float(job.get("scf_convergence", 1.0e-8)),
-                    solvent,
-                )
-                freq_mf.kernel()
-                if not getattr(freq_mf, "converged", False):
-                    raise RuntimeError("SCF on optimized geometry did not converge for frequency analysis")
+            freq_mf = final_mf if optimized_mol is not None else mf
+            if optimized_mol is not None and not getattr(freq_mf, "converged", False):
+                raise RuntimeError("SCF on optimized geometry did not converge for frequency analysis")
 
             frequencies_cm1, ir_intensities, normal_modes = _run_frequency_analysis(
                 freq_mol,

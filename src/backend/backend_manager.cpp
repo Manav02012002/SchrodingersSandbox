@@ -1,5 +1,6 @@
 #include "backend/backend_manager.h"
 
+#include "core/elements.h"
 #include "core/molden_parser.h"
 
 #include <json.hpp>
@@ -44,6 +45,15 @@ std::string property_to_string(PropertyRequest property) {
     case PropertyRequest::Optimization: return "optimization";
     }
     return {};
+}
+
+std::string scan_coord_type_to_string(JobSpec::ScanSpec::CoordType type) {
+    switch (type) {
+    case JobSpec::ScanSpec::CoordType::Distance: return "distance";
+    case JobSpec::ScanSpec::CoordType::Angle: return "angle";
+    case JobSpec::ScanSpec::CoordType::Dihedral: return "dihedral";
+    }
+    return "distance";
 }
 
 std::filesystem::path detect_scripts_dir() {
@@ -94,6 +104,56 @@ sbox::chem::MolecularSystem geometry_from_json(const json& atoms_json) {
     }
     mol.perceive_bonds();
     return mol;
+}
+
+sbox::chem::MolecularSystem geometry_from_xyz_frame(const std::vector<std::string>& atom_lines) {
+    sbox::chem::MolecularSystem mol;
+    constexpr double ang_to_bohr = 1.8897;
+    for (const std::string& line : atom_lines) {
+        std::istringstream iss(line);
+        std::string symbol;
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+        if (!(iss >> symbol >> x >> y >> z)) {
+            throw std::runtime_error("Invalid trajectory.xyz frame line");
+        }
+        const auto& element = sbox::elements::get_element(symbol);
+        mol.add_atom({element.Z, Eigen::Vector3d(x * ang_to_bohr, y * ang_to_bohr, z * ang_to_bohr), "", 0});
+    }
+    mol.perceive_bonds();
+    return mol;
+}
+
+std::vector<sbox::chem::MolecularSystem> read_xyz_trajectory(const std::filesystem::path& path) {
+    std::ifstream in(path);
+    if (!in) {
+        throw std::runtime_error("Failed to open trajectory.xyz: " + path.string());
+    }
+
+    std::vector<sbox::chem::MolecularSystem> frames;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        std::istringstream count_stream(line);
+        int atom_count = 0;
+        if (!(count_stream >> atom_count) || atom_count <= 0) {
+            throw std::runtime_error("Invalid atom count in trajectory.xyz");
+        }
+        std::getline(in, line);  // comment
+        std::vector<std::string> atom_lines;
+        atom_lines.reserve(static_cast<std::size_t>(atom_count));
+        for (int i = 0; i < atom_count; ++i) {
+            if (!std::getline(in, line)) {
+                throw std::runtime_error("Unexpected end of trajectory.xyz");
+            }
+            atom_lines.push_back(line);
+        }
+        frames.push_back(geometry_from_xyz_frame(atom_lines));
+    }
+    return frames;
 }
 
 }  // namespace
@@ -181,6 +241,19 @@ const JobResult* BackendManager::result(int job_id) const {
     return it != completed_jobs_.end() ? &it->second : nullptr;
 }
 
+std::string BackendManager::work_dir(int job_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto running_it = running_jobs_.find(job_id);
+    if (running_it != running_jobs_.end()) {
+        return running_it->second->work_dir;
+    }
+    const auto completed_it = completed_jobs_.find(job_id);
+    if (completed_it != completed_jobs_.end()) {
+        return completed_it->second.work_dir;
+    }
+    return {};
+}
+
 std::vector<int> BackendManager::poll_completed() {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -258,7 +331,7 @@ JobResult BackendManager::run_job(const JobSpec& spec, const std::string& work_d
         }
 
         write_job_json(spec, work_dir);
-        const std::filesystem::path script_path = driver_script(spec.method);
+        const std::filesystem::path script_path = driver_script(spec);
         if (!std::filesystem::exists(script_path)) {
             throw std::runtime_error("Driver script not found: " + script_path.string());
         }
@@ -391,6 +464,65 @@ void BackendManager::write_job_json(const JobSpec& spec, const std::string& work
     j["optimize"] = spec.optimize_geometry;
     j["max_opt_steps"] = spec.max_opt_steps;
     j["opt_convergence"] = spec.opt_convergence;
+    if (!spec.constraints.empty()) {
+        j["constraints"] = json::object();
+        if (!spec.constraints.freeze_atoms.empty()) {
+            j["constraints"]["freeze_atoms"] = spec.constraints.freeze_atoms;
+        }
+        if (!spec.constraints.fixed_distances.empty()) {
+            j["constraints"]["fix_distances"] = json::array();
+            for (const auto& [i, j_idx, value] : spec.constraints.fixed_distances) {
+                j["constraints"]["fix_distances"].push_back({i, j_idx, value});
+            }
+        }
+        if (!spec.constraints.fixed_angles.empty()) {
+            j["constraints"]["fix_angles"] = json::array();
+            for (const auto& [i, j_idx, k, value] : spec.constraints.fixed_angles) {
+                j["constraints"]["fix_angles"].push_back({i, j_idx, k, value});
+            }
+        }
+        if (!spec.constraints.fixed_dihedrals.empty()) {
+            j["constraints"]["fix_dihedrals"] = json::array();
+            for (const auto& [i, j_idx, k, l, value] : spec.constraints.fixed_dihedrals) {
+                j["constraints"]["fix_dihedrals"].push_back({i, j_idx, k, l, value});
+            }
+        }
+    }
+    if (spec.run_pes_scan) {
+        auto write_scan_coord = [](const JobSpec::ScanSpec::ScanCoordinate& coord) {
+            json coord_json;
+            coord_json["type"] = scan_coord_type_to_string(coord.type);
+            coord_json["atoms"] = coord.atom_indices;
+            coord_json["start"] = coord.start;
+            coord_json["end"] = coord.end;
+            coord_json["steps"] = coord.steps;
+            return coord_json;
+        };
+
+        j["scan"] = json::object();
+        j["scan"]["type"] = spec.scan.is_2d ? "2d" : "1d";
+        j["scan"]["coordinate_1"] = write_scan_coord(spec.scan.coord1);
+        if (spec.scan.is_2d) {
+            j["scan"]["coordinate_2"] = write_scan_coord(spec.scan.coord2);
+        }
+    }
+    if (spec.run_neb) {
+        auto write_geometry = [](const sbox::chem::MolecularSystem& mol) {
+            json geom = json::array();
+            for (const auto& atom : mol.atoms()) {
+                geom.push_back({
+                    atom.Z,
+                    {atom.position.x(), atom.position.y(), atom.position.z()},
+                });
+            }
+            return geom;
+        };
+
+        j["reactant"] = write_geometry(spec.neb.reactant);
+        j["product"] = write_geometry(spec.neb.product);
+        j["num_images"] = spec.neb.num_images;
+        j["max_neb_steps"] = spec.neb.max_neb_steps;
+    }
     j["solvent"] = spec.solvent;
     j["output_dir"] = work_dir;
     j["cube_resolution"] = 80;
@@ -420,6 +552,10 @@ JobResult BackendManager::parse_result(const JobSpec& spec, const std::string& w
     result.error_message = j.value("error", std::string{});
     result.total_energy = j.value("total_energy", 0.0);
     result.wall_time_seconds = j.value("wall_time", 0.0);
+    result.optimization_converged = j.value("optimization_converged", false);
+    if (j.contains("scan_type")) {
+        result.scan_result.is_2d = j.value("scan_type", std::string{}) == "2d";
+    }
 
     result.dipole_moment = Eigen::Vector3d(
         vec3_component_or_zero(j.value("dipole_moment", json::array()), 0),
@@ -498,6 +634,94 @@ JobResult BackendManager::parse_result(const JobSpec& spec, const std::string& w
         }
     }
 
+    if (j.contains("energies") && j["energies"].is_array()) {
+        result.scan_result.energies = j["energies"].get<std::vector<double>>();
+        result.has_scan = !result.scan_result.energies.empty();
+    }
+    if (j.contains("coordinate_values_1") && j["coordinate_values_1"].is_array()) {
+        result.scan_result.coord1_values = j["coordinate_values_1"].get<std::vector<double>>();
+        result.scan_result.steps_1 = spec.scan.coord1.steps;
+        result.has_scan = result.has_scan || !result.scan_result.coord1_values.empty();
+    }
+    if (j.contains("coordinate_values_2") && j["coordinate_values_2"].is_array()) {
+        result.scan_result.coord2_values = j["coordinate_values_2"].get<std::vector<double>>();
+        result.scan_result.steps_2 = spec.scan.is_2d ? spec.scan.coord2.steps : 0;
+        result.has_scan = result.has_scan || !result.scan_result.coord2_values.empty();
+    }
+    if (j.contains("geometries") && j["geometries"].is_array()) {
+        for (const auto& geometry_entry : j["geometries"]) {
+            if (!geometry_entry.is_array()) {
+                continue;
+            }
+            auto mol = geometry_from_json(geometry_entry);
+            mol.set_charge(spec.charge);
+            mol.set_multiplicity(spec.multiplicity);
+            result.scan_result.geometries.push_back(std::move(mol));
+        }
+        result.has_scan = result.has_scan || !result.scan_result.geometries.empty();
+    }
+
+    if (j.contains("path_energies") && j["path_energies"].is_array()) {
+        result.neb_result.path_energies = j["path_energies"].get<std::vector<double>>();
+        result.has_neb = !result.neb_result.path_energies.empty();
+    }
+    if (j.contains("path_geometries") && j["path_geometries"].is_array()) {
+        for (const auto& geometry_entry : j["path_geometries"]) {
+            if (!geometry_entry.is_array()) {
+                continue;
+            }
+            auto mol = geometry_from_json(geometry_entry);
+            mol.set_charge(spec.charge);
+            mol.set_multiplicity(spec.multiplicity);
+            result.neb_result.path_geometries.push_back(std::move(mol));
+        }
+        result.has_neb = result.has_neb || !result.neb_result.path_geometries.empty();
+    }
+    result.neb_result.ts_index = j.value("ts_index", -1);
+    result.neb_result.ts_energy = j.value("ts_energy", 0.0);
+    result.neb_result.forward_barrier = j.value("forward_barrier", 0.0);
+    result.neb_result.reverse_barrier = j.value("reverse_barrier", 0.0);
+    result.neb_result.converged = j.value("converged", false);
+    result.has_neb = result.has_neb || result.neb_result.ts_index >= 0;
+
+    const std::filesystem::path opt_history_path = std::filesystem::path(work_dir) / "optimization_history.json";
+    if (std::filesystem::exists(opt_history_path)) {
+        const json history_json = load_json_file(opt_history_path);
+        if (history_json.is_array()) {
+            for (const auto& entry : history_json) {
+                OptimizationStep step;
+                step.step = entry.value("step", 0);
+                step.energy = entry.value("energy", 0.0);
+                step.gradient_norm = entry.value("gradient_rms", entry.value("gradient_norm", 0.0));
+                if (entry.contains("geometry") && entry["geometry"].is_array()) {
+                    step.geometry = geometry_from_json(entry["geometry"]);
+                    step.geometry.set_charge(spec.charge);
+                    step.geometry.set_multiplicity(spec.multiplicity);
+                }
+                result.opt_history.push_back(std::move(step));
+            }
+        }
+    }
+
+    const std::filesystem::path trajectory_path = std::filesystem::path(work_dir) / "trajectory.xyz";
+    if (std::filesystem::exists(trajectory_path)) {
+        try {
+            result.trajectory_frames = read_xyz_trajectory(trajectory_path);
+            for (auto& frame : result.trajectory_frames) {
+                frame.set_charge(spec.charge);
+                frame.set_multiplicity(spec.multiplicity);
+            }
+            result.has_trajectory = !result.trajectory_frames.empty();
+        } catch (const std::exception& e) {
+            if (result.error_message.empty()) {
+                result.error_message = e.what();
+            } else {
+                result.error_message += "\n";
+                result.error_message += e.what();
+            }
+        }
+    }
+
     const std::filesystem::path molden_path = std::filesystem::path(work_dir) / "result.molden";
     if (std::filesystem::exists(molden_path)) {
         try {
@@ -559,6 +783,8 @@ BackendManager::Progress BackendManager::parse_progress(const std::string& work_
         Progress progress;
         progress.stage = j.value("stage", std::string{});
         progress.iteration = j.value("iteration", 0);
+        progress.step = j.value("step", 0);
+        progress.total = j.value("total", 0);
         progress.energy = j.value("energy", 0.0);
         progress.message = j.value("message", std::string{});
         return progress;
@@ -567,8 +793,15 @@ BackendManager::Progress BackendManager::parse_progress(const std::string& work_
     }
 }
 
-std::string BackendManager::driver_script(Method method) const {
-    const char* script_name = method_is_xtb(method) ? "xtb_driver.py" : "pyscf_driver.py";
+std::string BackendManager::driver_script(const JobSpec& spec) const {
+    const char* script_name = "pyscf_driver.py";
+    if (spec.run_neb) {
+        script_name = "neb_driver.py";
+    } else if (spec.run_pes_scan) {
+        script_name = "pes_scan_driver.py";
+    } else if (method_is_xtb(spec.method)) {
+        script_name = "xtb_driver.py";
+    }
     return (std::filesystem::path(scripts_dir_) / script_name).string();
 }
 

@@ -76,6 +76,111 @@ def _write_xyz(path, geometry):
             f.write(f"{sym} {x_ang:.10f} {y_ang:.10f} {z_ang:.10f}\n")
 
 
+def _read_xyz_frames(path):
+    frames = []
+    with open(path, "r", encoding="utf-8") as f:
+        while True:
+            line = f.readline()
+            if not line:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            nat = int(line)
+            comment = f.readline()
+            atoms = []
+            for _ in range(nat):
+                atom_line = f.readline()
+                if not atom_line:
+                    raise RuntimeError(f"Unexpected end of XYZ file: {path}")
+                parts = atom_line.split()
+                if len(parts) < 4:
+                    raise RuntimeError(f"Invalid XYZ line in {path}: {atom_line}")
+                sym = parts[0]
+                x, y, z = map(float, parts[1:4])
+                atoms.append((sym, x, y, z))
+            frames.append((comment.strip(), atoms))
+    return frames
+
+
+def _xyz_frames_to_bohr_geometry(frames):
+    ang_to_bohr = 1.0 / 0.529177
+    converted = []
+    for _, atoms in frames:
+        geometry = []
+        for sym, x, y, z in atoms:
+            geometry.append([SYMBOLS.index(sym), [x * ang_to_bohr, y * ang_to_bohr, z * ang_to_bohr]])
+        converted.append(geometry)
+    return converted
+
+
+def _write_trajectory_xyz(output_dir, source_path):
+    if not os.path.exists(source_path):
+        return []
+    frames = _read_xyz_frames(source_path)
+    traj_path = os.path.join(output_dir, "trajectory.xyz")
+    shutil.copyfile(source_path, traj_path)
+    return _xyz_frames_to_bohr_geometry(frames)
+
+
+def _is_xyz_atom_line(line):
+    parts = line.split()
+    if len(parts) < 4 or parts[0] not in SYMBOLS:
+        return False
+    try:
+        float(parts[1])
+        float(parts[2])
+        float(parts[3])
+    except ValueError:
+        return False
+    return True
+
+
+def _extract_embedded_xyz_frames(text):
+    lines = text.splitlines()
+    frames = []
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        try:
+            nat = int(stripped)
+        except ValueError:
+            i += 1
+            continue
+
+        if nat <= 0 or i + 1 + nat >= len(lines):
+            i += 1
+            continue
+
+        comment = lines[i + 1].rstrip("\n")
+        atom_lines = lines[i + 2 : i + 2 + nat]
+        if all(_is_xyz_atom_line(line) for line in atom_lines):
+            atoms = []
+            for line in atom_lines:
+                parts = line.split()
+                atoms.append((parts[0], float(parts[1]), float(parts[2]), float(parts[3])))
+            frames.append((comment.strip(), atoms))
+            i += nat + 2
+            continue
+
+        i += 1
+    return frames
+
+
+def _write_trajectory_from_text(output_dir, text):
+    frames = _extract_embedded_xyz_frames(text)
+    if not frames:
+        return []
+    traj_path = os.path.join(output_dir, "trajectory.xyz")
+    with open(traj_path, "w", encoding="utf-8") as f:
+        for comment, atoms in frames:
+            f.write(f"{len(atoms)}\n")
+            f.write(f"{comment}\n")
+            for sym, x, y, z in atoms:
+                f.write(f"{sym} {x:.10f} {y:.10f} {z:.10f}\n")
+    return _xyz_frames_to_bohr_geometry(frames)
+
+
 def _run_tblite(job, result):
     from tblite.interface import Calculator
 
@@ -147,6 +252,9 @@ def _run_xtb_cli(job, output_dir, xyz_path, result):
     cmd.extend(["--chrg", str(job.get("charge", 0))])
     cmd.extend(["--uhf", str(int(job.get("multiplicity", 1)) - 1)])
     cmd.extend(["--json"])
+    properties = set(job.get("properties", []))
+    if "molden" in properties:
+        cmd.append("--molden")
 
     if job.get("optimize", False):
         cmd.append("--opt")
@@ -203,6 +311,44 @@ def _run_xtb_cli(job, output_dir, xyz_path, result):
     if os.path.exists(molden_path):
         shutil.copy(molden_path, os.path.join(output_dir, "result.molden"))
 
+    if job.get("optimize", False):
+        result["optimization_converged"] = True
+        traj_frames = []
+        for candidate in ("xtbopt.trj", "xtb.trj"):
+            candidate_path = os.path.join(output_dir, candidate)
+            if os.path.exists(candidate_path):
+                try:
+                    traj_frames = _write_trajectory_xyz(output_dir, candidate_path)
+                    if traj_frames:
+                        break
+                except Exception:
+                    traj_frames = []
+        if not traj_frames:
+            for candidate in ("xtbopt.log", "xtbopt.xyzlog"):
+                candidate_path = os.path.join(output_dir, candidate)
+                if os.path.exists(candidate_path):
+                    try:
+                        with open(candidate_path, "r", encoding="utf-8", errors="ignore") as f:
+                            traj_frames = _write_trajectory_from_text(output_dir, f.read())
+                        if traj_frames:
+                            break
+                    except Exception:
+                        traj_frames = []
+        if not traj_frames and proc.stdout:
+            try:
+                traj_frames = _write_trajectory_from_text(output_dir, proc.stdout)
+            except Exception:
+                traj_frames = []
+        opt_xyz = os.path.join(output_dir, "xtbopt.xyz")
+        if os.path.exists(opt_xyz):
+            final_frames = _xyz_frames_to_bohr_geometry(_read_xyz_frames(opt_xyz))
+            if final_frames:
+                result["optimized_geometry"] = final_frames[-1]
+                if not traj_frames:
+                    shutil.copyfile(opt_xyz, os.path.join(output_dir, "trajectory.xyz"))
+                    traj_frames = final_frames
+        result["opt_steps"] = len(traj_frames)
+
     result["success"] = True
 
 
@@ -222,6 +368,7 @@ def main():
         "success": False,
         "error": "",
         "total_energy": 0.0,
+        "optimization_converged": False,
         "dipole_moment": [0.0, 0.0, 0.0],
         "mulliken_charges": [],
         "orbital_energies": [],
@@ -238,14 +385,17 @@ def main():
 
         write_progress(progress_path, "running_xtb", "Preparing xTB calculation")
 
+        properties = set(job.get("properties", []))
+        need_molden = "molden" in properties
         used_tblite = False
-        try:
-            _run_tblite(job, result)
-            used_tblite = True
-        except ImportError:
-            used_tblite = False
-        except Exception:
-            used_tblite = False
+        if (not need_molden and not job.get("optimize", False)) or _find_xtb() is None:
+            try:
+                _run_tblite(job, result)
+                used_tblite = True
+            except ImportError:
+                used_tblite = False
+            except Exception:
+                used_tblite = False
 
         if not used_tblite:
             _run_xtb_cli(job, output_dir, xyz_path, result)

@@ -2,6 +2,7 @@
 
 #include "core/molecular_system.h"
 #include "editor/picking.h"
+#include "io/pdb_io.h"
 #include "renderer/shader.h"
 
 #include <Eigen/Core>
@@ -20,6 +21,20 @@ enum class MolRenderMode : int {
     StickOnly = 3
 };
 
+enum class ColorMode : int {
+    CPK = 0,
+    ByChain = 1,
+    ByResidue = 2,
+    ByBFactor = 3,
+    ByCharge = 4,
+    BySecondary = 5,
+    Custom = 6,
+};
+
+Eigen::Vector3f chain_color(int chain_index);
+Eigen::Vector3f residue_color(const std::string& residue_name);
+Eigen::Vector3f bfactor_color(float b_factor, float b_min, float b_max);
+
 class MolRenderer {
 public:
     MolRenderer();
@@ -28,7 +43,10 @@ public:
     MolRenderer(const MolRenderer&) = delete;
     MolRenderer& operator=(const MolRenderer&) = delete;
 
-    void upload(const sbox::chem::MolecularSystem& mol);
+    void upload(const sbox::chem::MolecularSystem& mol,
+                ColorMode color_mode = ColorMode::CPK,
+                const sbox::io::PDBData* pdb_data = nullptr,
+                const std::vector<double>* charges = nullptr);
 
     void render(const Eigen::Matrix4f& view_matrix,
                 const Eigen::Matrix4f& proj_matrix,

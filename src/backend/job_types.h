@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <Eigen/Core>
@@ -151,6 +153,44 @@ inline bool method_is_xtb(Method m) {
 }
 
 struct JobSpec {
+    struct NEBSpec {
+        sbox::chem::MolecularSystem reactant;
+        sbox::chem::MolecularSystem product;
+        int num_images = 9;
+        int max_neb_steps = 50;
+    };
+
+    struct ScanSpec {
+        enum class CoordType {
+            Distance,
+            Angle,
+            Dihedral,
+        };
+
+        struct ScanCoordinate {
+            CoordType type = CoordType::Distance;
+            std::vector<int> atom_indices;
+            double start = 0.0;
+            double end = 0.0;
+            int steps = 0;
+        };
+
+        ScanCoordinate coord1;
+        ScanCoordinate coord2;
+        bool is_2d = false;
+    };
+
+    struct ConstraintSpec {
+        std::vector<int> freeze_atoms;
+        std::vector<std::tuple<int, int, double>> fixed_distances;
+        std::vector<std::tuple<int, int, int, double>> fixed_angles;
+        std::vector<std::tuple<int, int, int, int, double>> fixed_dihedrals;
+
+        bool empty() const {
+            return freeze_atoms.empty() && fixed_distances.empty() && fixed_angles.empty() && fixed_dihedrals.empty();
+        }
+    };
+
     sbox::chem::MolecularSystem geometry;
 
     Method method = Method::HF;
@@ -171,6 +211,11 @@ struct JobSpec {
     bool optimize_geometry = false;
     int max_opt_steps = 100;
     double opt_convergence = 1e-5;
+    ConstraintSpec constraints;
+    bool run_neb = false;
+    NEBSpec neb;
+    bool run_pes_scan = false;
+    ScanSpec scan;
 
     std::string solvent;
 
@@ -195,6 +240,26 @@ struct OptimizationStep {
 };
 
 struct JobResult {
+    struct NEBResult {
+        std::vector<double> path_energies;
+        std::vector<sbox::chem::MolecularSystem> path_geometries;
+        int ts_index = -1;
+        double ts_energy = 0.0;
+        double forward_barrier = 0.0;
+        double reverse_barrier = 0.0;
+        bool converged = false;
+    };
+
+    struct ScanResult {
+        bool is_2d = false;
+        std::vector<double> energies;
+        std::vector<double> coord1_values;
+        std::vector<double> coord2_values;
+        std::vector<sbox::chem::MolecularSystem> geometries;
+        int steps_1 = 0;
+        int steps_2 = 0;
+    };
+
     int job_id = 0;
     JobStatus status = JobStatus::Pending;
     std::string error_message;
@@ -207,6 +272,7 @@ struct JobResult {
 
     sbox::chem::MolecularSystem optimized_geometry;
     bool has_optimized_geometry = false;
+    bool optimization_converged = false;
 
     Eigen::Vector3d dipole_moment = Eigen::Vector3d::Zero();
     std::vector<double> mulliken_charges;
@@ -229,6 +295,12 @@ struct JobResult {
 
     std::vector<SCFIteration> scf_history;
     std::vector<OptimizationStep> opt_history;
+    std::vector<sbox::chem::MolecularSystem> trajectory_frames;
+    bool has_trajectory = false;
+    NEBResult neb_result;
+    bool has_neb = false;
+    ScanResult scan_result;
+    bool has_scan = false;
 
     double wall_time_seconds = 0.0;
 

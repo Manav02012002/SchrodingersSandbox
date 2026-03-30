@@ -2,6 +2,7 @@
 
 #include "backend/backend_manager.h"
 #include "backend/python_env.h"
+#include "chem/ligand_library.h"
 #include "core/basis_set.h"
 #include "core/molecular_system.h"
 #include "editor/draw_mode.h"
@@ -12,11 +13,14 @@
 #include "editor/select_mode.h"
 #include "io/cube_io.h"
 #include "io/fchk_io.h"
+#include "io/pdb_io.h"
 #include "io/sdf_io.h"
+#include "io/trajectory_io.h"
 #include "io/xyz_io.h"
 #include "renderer/basis_texture.h"
 #include "renderer/camera.h"
 #include "renderer/esp_surface.h"
+#include "renderer/lod_renderer.h"
 #include "renderer/mol_renderer.h"
 #include "renderer/shader.h"
 #include "renderer/volume_texture.h"
@@ -57,11 +61,16 @@ private:
     void loadMoldenFile(const std::string& path);
     void loadCubeFile(const std::string& path);
     void loadXYZFile(const std::string& path);
+    void loadTrajectoryFile(const std::string& path);
     void loadSDFFile(const std::string& path);
+    void loadPDBFile(const std::string& path);
     void loadFchkFile(const std::string& path);
+    void uploadCurrentMoleculeToRenderers();
     void applyMOData(const sbox::basis::MOData& mo_data, const std::string& name_hint);
     void applyBackendResult(const sbox::backend::JobResult& result);
     void loadESPSurface(const sbox::backend::JobResult& result);
+    void detect_metal_center();
+    void run_crystal_field_analysis();
     [[nodiscard]] sbox::backend::JobSpec makeJobSpecFromState() const;
     [[nodiscard]] int find_homo_index() const;
     [[nodiscard]] float compute_mol_bound_radius(const sbox::chem::MolecularSystem& mol) const;
@@ -78,14 +87,22 @@ private:
     sbox::backend::BackendManager backend_;
     sbox::backend::PythonEnvironment python_env_;
     ui::SetupWizardState wizard_state_;
+    sbox::chem::LigandLibrary ligand_library_;
+    sbox::analysis::DOrbitalEnergies current_d_orbitals_;
+    bool has_d_orbital_analysis_ = false;
+    int current_metal_index_ = -1;
     sbox::render::BasisTextures basis_textures_;
     sbox::render::ESPSurface esp_surface_;
+    sbox::render::LODRenderer lod_renderer_;
     sbox::render::MolRenderer mol_renderer_;
     sbox::render::VolumeTexture volume_texture_;
 
     sbox::basis::MOData current_mo_data_;
     sbox::chem::MolecularSystem current_molecule_;
+    sbox::io::Trajectory current_trajectory_;
+    sbox::io::PDBData current_pdb_data_;
     std::optional<sbox::backend::JobResult> latest_result_;
+    bool has_trajectory_ = false;
     bool has_mo_data_ = false;
     bool has_cube_data_ = false;
     bool use_cube_fallback_ = false;
@@ -100,6 +117,11 @@ private:
     float scroll_delta_ = 0.0f;
     float max_density_estimate_ = 1.0f;
     bool editor_consuming_left_drag_ = false;
+    bool open_message_popup_ = false;
+    std::string message_popup_title_;
+    std::string message_popup_text_;
+    bool open_metal_picker_popup_ = false;
+    std::vector<int> detected_metal_choices_;
 
     int density_n_ = -1;
     int density_l_ = -1;

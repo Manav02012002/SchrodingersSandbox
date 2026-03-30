@@ -49,11 +49,15 @@ target_include_directories(nlohmann_json INTERFACE external/nlohmann)
 add_executable(schrodingers_sandbox
     src/main.cpp
     src/backend/backend_manager.cpp
+    src/analysis/crystal_field.cpp
     src/analysis/orbital_composition.cpp
     src/backend/python_env.cpp
+    src/chem/ligand_library.cpp
     src/core/special_functions.cpp
     src/core/hydrogen.cpp
     src/core/slater.cpp
+    src/core/spline.cpp
+    src/chem/coordination.cpp
     src/core/elements.cpp
     src/core/gaussian_eval.cpp
     src/core/covalent_radii.cpp
@@ -65,8 +69,10 @@ add_executable(schrodingers_sandbox
     src/core/molden_parser.cpp
     src/io/cube_io.cpp
     src/io/fchk_io.cpp
+    src/io/pdb_io.cpp
     src/io/project_io.cpp
     src/io/sdf_io.cpp
+    src/io/trajectory_io.cpp
     src/io/xyz_io.cpp
     src/editor/command.cpp
     src/editor/picking.cpp
@@ -81,6 +87,7 @@ add_executable(schrodingers_sandbox
     src/renderer/camera.cpp
     src/renderer/basis_texture.cpp
     src/renderer/esp_surface.cpp
+    src/renderer/lod_renderer.cpp
     src/renderer/mol_renderer.cpp
     src/renderer/volume_texture.cpp
     src/ui/app.cpp
@@ -92,9 +99,15 @@ add_executable(schrodingers_sandbox
     src/ui/mo_diagram.cpp
     src/ui/mo_diagram_plot.cpp
     src/ui/orbital_composition_panel.cpp
+    src/ui/optimization_panel.cpp
+    src/ui/pes_panel.cpp
     src/ui/dos_panel.cpp
     src/ui/computation_panel.cpp
+    src/ui/complex_builder.cpp
+    src/ui/constraint_editor.cpp
     src/ui/charge_overlay.cpp
+    src/ui/crystal_field_panel.cpp
+    src/ui/d_orbital_viewer.cpp
     src/ui/context_menu.cpp
     src/ui/file_dialog.cpp
     src/ui/molecule_info.cpp
@@ -102,8 +115,11 @@ add_executable(schrodingers_sandbox
     src/ui/esp_controls.cpp
     src/ui/ir_spectrum_panel.cpp
     src/ui/property_dashboard.cpp
+    src/ui/reaction_path_panel.cpp
     src/ui/results_panel.cpp
     src/ui/setup_wizard.cpp
+    src/ui/solvent_panel.cpp
+    src/ui/spectrochemical_panel.cpp
     src/ui/plot_utils.cpp
     src/ui/periodic_table.cpp
     src/ui/orbital_browser.cpp
@@ -118,6 +134,8 @@ add_custom_command(TARGET schrodingers_sandbox POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/data/shaders
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/data/shaders ${CMAKE_BINARY_DIR}/data/shaders
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/data/scripts
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/data/scripts/neb_driver.py ${CMAKE_BINARY_DIR}/data/scripts/neb_driver.py
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/data/scripts/pes_scan_driver.py ${CMAKE_BINARY_DIR}/data/scripts/pes_scan_driver.py
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/data/scripts/pyscf_driver.py ${CMAKE_BINARY_DIR}/data/scripts/pyscf_driver.py
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/data/scripts/xtb_driver.py ${CMAKE_BINARY_DIR}/data/scripts/xtb_driver.py
 )
@@ -222,6 +240,28 @@ add_executable(test_fchk_io
 target_include_directories(test_fchk_io PRIVATE src)
 target_link_libraries(test_fchk_io PRIVATE GTest::gtest_main Eigen3::Eigen)
 target_compile_options(test_fchk_io PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_pdb_io
+    tests/test_pdb_io.cpp
+    src/io/pdb_io.cpp
+    src/core/covalent_radii.cpp
+    src/core/elements.cpp
+    src/core/molecular_system.cpp
+)
+target_include_directories(test_pdb_io PRIVATE src)
+target_link_libraries(test_pdb_io PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_pdb_io PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_trajectory_io
+    tests/test_trajectory_io.cpp
+    src/io/trajectory_io.cpp
+    src/core/covalent_radii.cpp
+    src/core/elements.cpp
+    src/core/molecular_system.cpp
+)
+target_include_directories(test_trajectory_io PRIVATE src)
+target_link_libraries(test_trajectory_io PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_trajectory_io PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(test_zmatrix
     tests/test_zmatrix.cpp
@@ -341,6 +381,49 @@ target_include_directories(test_orbital_composition PRIVATE src)
 target_link_libraries(test_orbital_composition PRIVATE GTest::gtest_main Eigen3::Eigen)
 target_compile_options(test_orbital_composition PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(test_coordination
+    tests/test_coordination.cpp
+    src/chem/coordination.cpp
+    src/core/covalent_radii.cpp
+    src/core/elements.cpp
+    src/core/molecular_system.cpp
+)
+target_include_directories(test_coordination PRIVATE src)
+target_link_libraries(test_coordination PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_coordination PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_ligand_library
+    tests/test_ligand_library.cpp
+    src/chem/coordination.cpp
+    src/chem/ligand_library.cpp
+    src/core/covalent_radii.cpp
+    src/core/elements.cpp
+    src/core/molecular_system.cpp
+)
+target_include_directories(test_ligand_library PRIVATE src)
+target_link_libraries(test_ligand_library PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_ligand_library PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_crystal_field
+    tests/test_crystal_field.cpp
+    src/analysis/crystal_field.cpp
+    src/core/basis_set.cpp
+    src/core/covalent_radii.cpp
+    src/core/elements.cpp
+    src/core/molecular_system.cpp
+)
+target_include_directories(test_crystal_field PRIVATE src)
+target_link_libraries(test_crystal_field PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_crystal_field PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_spline
+    tests/test_spline.cpp
+    src/core/spline.cpp
+)
+target_include_directories(test_spline PRIVATE src)
+target_link_libraries(test_spline PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_spline PRIVATE -Wall -Wextra -Wpedantic)
+
 if(DEFINED ENV{SBOX_RUN_INTEGRATION_TESTS} AND "$ENV{SBOX_RUN_INTEGRATION_TESTS}" STREQUAL "1")
     add_executable(test_pyscf_integration
         tests/test_pyscf_integration.cpp
@@ -356,6 +439,21 @@ if(DEFINED ENV{SBOX_RUN_INTEGRATION_TESTS} AND "$ENV{SBOX_RUN_INTEGRATION_TESTS}
     target_include_directories(test_pyscf_integration PRIVATE src)
     target_link_libraries(test_pyscf_integration PRIVATE GTest::gtest_main Eigen3::Eigen nlohmann_json)
     target_compile_options(test_pyscf_integration PRIVATE -Wall -Wextra -Wpedantic)
+
+    add_executable(test_pes_integration
+        tests/test_pes_integration.cpp
+        src/backend/backend_manager.cpp
+        src/backend/python_env.cpp
+        src/core/basis_set.cpp
+        src/core/covalent_radii.cpp
+        src/core/elements.cpp
+        src/core/molecular_system.cpp
+        src/core/molden_parser.cpp
+        src/io/cube_io.cpp
+    )
+    target_include_directories(test_pes_integration PRIVATE src)
+    target_link_libraries(test_pes_integration PRIVATE GTest::gtest_main Eigen3::Eigen nlohmann_json)
+    target_compile_options(test_pes_integration PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 include(GoogleTest)
@@ -371,6 +469,8 @@ add_test(NAME test_xyz_io COMMAND test_xyz_io)
 add_test(NAME test_sdf_io COMMAND test_sdf_io)
 add_test(NAME test_cube_io COMMAND test_cube_io)
 add_test(NAME test_fchk_io COMMAND test_fchk_io)
+add_test(NAME test_pdb_io COMMAND test_pdb_io)
+add_test(NAME test_trajectory_io COMMAND test_trajectory_io)
 add_test(NAME test_zmatrix COMMAND test_zmatrix)
 add_test(NAME test_symmetry COMMAND test_symmetry)
 add_test(NAME test_project_io COMMAND test_project_io)
@@ -382,7 +482,15 @@ add_test(NAME test_picking COMMAND test_picking)
 add_test(NAME test_valence COMMAND test_valence)
 add_test(NAME test_fragment_library COMMAND test_fragment_library)
 add_test(NAME test_orbital_composition COMMAND test_orbital_composition)
+add_test(NAME test_coordination COMMAND test_coordination)
+add_test(NAME test_ligand_library COMMAND test_ligand_library)
+add_test(NAME test_crystal_field COMMAND test_crystal_field)
+add_test(NAME test_spline COMMAND test_spline)
 
 if(TARGET test_pyscf_integration)
     add_test(NAME test_pyscf_integration COMMAND test_pyscf_integration)
+endif()
+
+if(TARGET test_pes_integration)
+    add_test(NAME test_pes_integration COMMAND test_pes_integration)
 endif()

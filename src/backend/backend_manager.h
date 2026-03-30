@@ -27,12 +27,15 @@ public:
     bool is_running(int job_id) const;
     JobStatus status(int job_id) const;
     const JobResult* result(int job_id) const;
+    std::string work_dir(int job_id) const;
 
     std::vector<int> poll_completed();
 
     struct Progress {
         std::string stage;
         int iteration = 0;
+        int step = 0;
+        int total = 0;
         double energy = 0.0;
         std::string message;
     };
@@ -70,7 +73,7 @@ private:
     void write_job_json(const JobSpec& spec, const std::string& work_dir);
     JobResult parse_result(const JobSpec& spec, const std::string& work_dir);
     Progress parse_progress(const std::string& work_dir) const;
-    std::string driver_script(Method method) const;
+    std::string driver_script(const JobSpec& spec) const;
 };
 
 }  // namespace sbox::backend

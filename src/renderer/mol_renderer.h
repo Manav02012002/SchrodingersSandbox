@@ -1,9 +1,12 @@
 #pragma once
 
 #include "core/molecular_system.h"
+#include "editor/picking.h"
 #include "renderer/shader.h"
 
 #include <Eigen/Core>
+
+#include <imgui.h>
 
 #include <memory>
 #include <vector>
@@ -31,6 +34,18 @@ public:
                 const Eigen::Matrix4f& proj_matrix,
                 const Eigen::Vector3f& camera_pos,
                 MolRenderMode mode = MolRenderMode::BallAndStick);
+    void render_selection(const Eigen::Matrix4f& view_matrix,
+                          const Eigen::Matrix4f& proj_matrix,
+                          const Eigen::Vector3f& camera_pos,
+                          const sbox::chem::MolecularSystem& mol,
+                          const sbox::editor::Selection& selection,
+                          MolRenderMode mode);
+    void render_atom_labels(const sbox::chem::MolecularSystem& mol,
+                            const Eigen::Matrix4f& vp_matrix,
+                            const ImVec2& viewport_pos,
+                            const ImVec2& viewport_size,
+                            bool show_indices = false,
+                            bool show_symbols = true);
 
     bool has_data() const;
     int num_atoms() const;
@@ -52,6 +67,14 @@ private:
 
     std::vector<float> atom_instances_;
     std::vector<float> bond_instances_;
+
+    void render_highlights(const Eigen::Matrix4f& view_matrix,
+                           const Eigen::Matrix4f& proj_matrix,
+                           const Eigen::Vector3f& camera_pos,
+                           const std::vector<float>& atom_data,
+                           const std::vector<float>& bond_data,
+                           const Eigen::Vector3f& highlight_color,
+                           MolRenderMode mode);
 };
 
 }  // namespace sbox::render

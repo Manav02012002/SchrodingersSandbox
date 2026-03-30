@@ -61,4 +61,35 @@ std::string open_file_dialog(const char* title, const char* filters) {
     return selected_path;
 }
 
+std::string save_file_dialog(const char* title, const char* filters, const char* default_name) {
+    (void)title;
+
+    if (NFD_Init() != NFD_OKAY) {
+        return "";
+    }
+
+    std::string selected_path;
+    nfdu8char_t* path = nullptr;
+    const std::vector<std::string> extensions = split_filters(filters);
+    std::vector<nfdu8filteritem_t> items;
+    items.reserve(extensions.size());
+    for (const std::string& ext : extensions) {
+        items.push_back({ext.c_str(), ext.c_str()});
+    }
+
+    const nfdresult_t result = NFD_SaveDialogU8(
+        &path,
+        items.empty() ? nullptr : items.data(),
+        items.size(),
+        nullptr,
+        default_name);
+    if (result == NFD_OKAY && path != nullptr) {
+        selected_path = path;
+        NFD_FreePathU8(path);
+    }
+
+    NFD_Quit();
+    return selected_path;
+}
+
 }  // namespace sbox::ui

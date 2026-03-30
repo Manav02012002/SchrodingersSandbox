@@ -40,6 +40,8 @@ target_include_directories(nlohmann_json INTERFACE external/nlohmann)
 
 add_executable(schrodingers_sandbox
     src/main.cpp
+    src/backend/backend_manager.cpp
+    src/backend/python_env.cpp
     src/core/special_functions.cpp
     src/core/hydrogen.cpp
     src/core/slater.cpp
@@ -48,6 +50,7 @@ add_executable(schrodingers_sandbox
     src/core/covalent_radii.cpp
     src/core/molecular_system.cpp
     src/core/symmetry.cpp
+    src/core/valence.cpp
     src/core/zmatrix.cpp
     src/core/basis_set.cpp
     src/core/molden_parser.cpp
@@ -56,6 +59,14 @@ add_executable(schrodingers_sandbox
     src/io/project_io.cpp
     src/io/sdf_io.cpp
     src/io/xyz_io.cpp
+    src/editor/command.cpp
+    src/editor/picking.cpp
+    src/editor/select_mode.cpp
+    src/editor/draw_mode.cpp
+    src/editor/erase_mode.cpp
+    src/editor/measure_mode.cpp
+    src/editor/fragment_mode.cpp
+    src/editor/fragment_library.cpp
     src/renderer/window.cpp
     src/renderer/shader.cpp
     src/renderer/camera.cpp
@@ -68,11 +79,17 @@ add_executable(schrodingers_sandbox
     src/ui/status_bar.cpp
     src/ui/energy_diagram.cpp
     src/ui/mo_diagram.cpp
+    src/ui/computation_panel.cpp
+    src/ui/charge_overlay.cpp
+    src/ui/context_menu.cpp
     src/ui/file_dialog.cpp
     src/ui/molecule_info.cpp
+    src/ui/results_panel.cpp
+    src/ui/setup_wizard.cpp
     src/ui/periodic_table.cpp
     src/ui/orbital_browser.cpp
     src/ui/properties_panel.cpp
+    src/ui/editor_toolbar.cpp
 )
 target_include_directories(schrodingers_sandbox PRIVATE src)
 target_link_libraries(schrodingers_sandbox PRIVATE imgui glad glfw OpenGL::GL Eigen3::Eigen nlohmann_json nfd)
@@ -81,6 +98,9 @@ target_compile_options(schrodingers_sandbox PRIVATE -Wall -Wextra -Wpedantic)
 add_custom_command(TARGET schrodingers_sandbox POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/data/shaders
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/data/shaders ${CMAKE_BINARY_DIR}/data/shaders
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/data/scripts
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/data/scripts/pyscf_driver.py ${CMAKE_BINARY_DIR}/data/scripts/pyscf_driver.py
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/data/scripts/xtb_driver.py ${CMAKE_BINARY_DIR}/data/scripts/xtb_driver.py
 )
 
 enable_testing()
@@ -236,6 +256,76 @@ target_include_directories(test_gpu_crossval PRIVATE src external/glad/include)
 target_link_libraries(test_gpu_crossval PRIVATE GTest::gtest_main Eigen3::Eigen glad OpenGL::GL)
 target_compile_options(test_gpu_crossval PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(test_python_env
+    tests/test_python_env.cpp
+    src/backend/python_env.cpp
+)
+target_include_directories(test_python_env PRIVATE src)
+target_link_libraries(test_python_env PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_python_env PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_command_stack
+    tests/test_command_stack.cpp
+    src/core/covalent_radii.cpp
+    src/core/elements.cpp
+    src/core/molecular_system.cpp
+    src/core/valence.cpp
+    src/editor/command.cpp
+)
+target_include_directories(test_command_stack PRIVATE src)
+target_link_libraries(test_command_stack PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_command_stack PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_picking
+    tests/test_picking.cpp
+    src/core/covalent_radii.cpp
+    src/core/elements.cpp
+    src/core/molecular_system.cpp
+    src/editor/picking.cpp
+)
+target_include_directories(test_picking PRIVATE src external/imgui)
+target_link_libraries(test_picking PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_picking PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_valence
+    tests/test_valence.cpp
+    src/core/covalent_radii.cpp
+    src/core/elements.cpp
+    src/core/molecular_system.cpp
+    src/core/valence.cpp
+)
+target_include_directories(test_valence PRIVATE src)
+target_link_libraries(test_valence PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_valence PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_fragment_library
+    tests/test_fragment_library.cpp
+    src/core/covalent_radii.cpp
+    src/core/elements.cpp
+    src/core/molecular_system.cpp
+    src/editor/fragment_library.cpp
+)
+target_include_directories(test_fragment_library PRIVATE src)
+target_link_libraries(test_fragment_library PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_fragment_library PRIVATE -Wall -Wextra -Wpedantic)
+
+if(DEFINED ENV{SBOX_RUN_INTEGRATION_TESTS} AND "$ENV{SBOX_RUN_INTEGRATION_TESTS}" STREQUAL "1")
+    add_executable(test_pyscf_integration
+        tests/test_pyscf_integration.cpp
+        src/backend/backend_manager.cpp
+        src/backend/python_env.cpp
+        src/core/basis_set.cpp
+        src/core/covalent_radii.cpp
+        src/core/elements.cpp
+        src/core/molecular_system.cpp
+        src/core/molden_parser.cpp
+        src/io/cube_io.cpp
+    )
+    target_include_directories(test_pyscf_integration PRIVATE src)
+    target_link_libraries(test_pyscf_integration PRIVATE GTest::gtest_main Eigen3::Eigen nlohmann_json)
+    target_compile_options(test_pyscf_integration PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(test_constants)
 
@@ -254,3 +344,12 @@ add_test(NAME test_symmetry COMMAND test_symmetry)
 add_test(NAME test_project_io COMMAND test_project_io)
 add_test(NAME test_gaussian_eval COMMAND test_gaussian_eval)
 add_test(NAME test_gpu_crossval COMMAND test_gpu_crossval)
+add_test(NAME test_python_env COMMAND test_python_env)
+add_test(NAME test_command_stack COMMAND test_command_stack)
+add_test(NAME test_picking COMMAND test_picking)
+add_test(NAME test_valence COMMAND test_valence)
+add_test(NAME test_fragment_library COMMAND test_fragment_library)
+
+if(TARGET test_pyscf_integration)
+    add_test(NAME test_pyscf_integration COMMAND test_pyscf_integration)
+endif()

@@ -3,10 +3,16 @@
 #include "core/gaussian_eval.h"
 #include "core/hydrogen.h"
 #include "core/molden_parser.h"
+#include "ui/charge_overlay.h"
+#include "ui/computation_panel.h"
+#include "ui/context_menu.h"
+#include "ui/editor_toolbar.h"
 #include "ui/file_dialog.h"
 #include "ui/mo_diagram.h"
 #include "ui/molecule_info.h"
 #include "ui/panels.h"
+#include "ui/results_panel.h"
+#include "ui/setup_wizard.h"
 
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
@@ -47,20 +53,6 @@ std::unique_ptr<Shader> try_load_shader(const std::string& vertex,
         std::cerr << label << " shader unavailable: " << ex.what() << '\n';
         return nullptr;
     }
-}
-
-void update_bound_radius_from_molecule(ui::AppState& state, const sbox::chem::MolecularSystem& molecule) {
-    if (molecule.num_atoms() == 0) {
-        state.mol_bound_radius = 10.0f;
-        return;
-    }
-
-    const Eigen::Vector3d center = molecule.center_of_mass();
-    double max_dist = 0.0;
-    for (const sbox::chem::Atom& atom : molecule.atoms()) {
-        max_dist = std::max(max_dist, (atom.position - center).norm());
-    }
-    state.mol_bound_radius = static_cast<float>(max_dist + 10.0);
 }
 
 void clear_mo_summary(ui::AppState& state) {
@@ -174,8 +166,22 @@ App::App() {
 
     glGenVertexArrays(1, &fullscreen_vao_);
 
+    python_env_.detect();
+    python_env_.check_packages();
+    backend_.init(python_env_);
+    if (!python_env_.has_pyscf() && !python_env_.has_tblite()) {
+        wizard_state_.show_wizard = true;
+    }
+
     glfwSetWindowUserPointer(window_->handle(), this);
     glfwSetScrollCallback(window_->handle(), &App::ScrollCallback);
+
+    editor_state_.select_mode = std::make_unique<sbox::editor::SelectMode>();
+    editor_state_.draw_mode = std::make_unique<sbox::editor::DrawMode>();
+    editor_state_.erase_mode = std::make_unique<sbox::editor::EraseMode>();
+    editor_state_.measure_mode = std::make_unique<sbox::editor::MeasureMode>();
+    editor_state_.fragment_mode = std::make_unique<sbox::editor::FragmentMode>(&editor_state_.fragment_library);
+    editor_state_.select_mode->set_context_menu_state(&editor_state_.context_menu);
 
     initImGui();
     ensureViewportTarget(viewport_width_, viewport_height_);
@@ -211,12 +217,50 @@ void App::run() {
     while (!window_->shouldClose()) {
         window_->pollEvents();
 
+        const std::vector<int> completed_jobs = backend_.poll_completed();
+        for (int job_id : completed_jobs) {
+            const sbox::backend::JobResult* job_result = backend_.result(job_id);
+            state_.computation.active_job_id = job_id;
+            state_.computation.job_running = false;
+            state_.computation.job_completed = true;
+            state_.computation.last_progress_iteration = 0;
+            if (job_result != nullptr) {
+                latest_result_ = *job_result;
+                state_.computation.last_error = job_result->error_message;
+                if (job_result->status == sbox::backend::JobStatus::Converged) {
+                    try {
+                        applyBackendResult(*job_result);
+                    } catch (const std::exception& ex) {
+                        state_.computation.last_error = ex.what();
+                    }
+                }
+            }
+        }
+
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+        const bool wizard_active = ui::draw_setup_wizard(wizard_state_, python_env_);
+        backend_.init(python_env_);
+        (void)wizard_active;
+
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
+                if (ImGui::MenuItem("New Molecule")) {
+                    current_molecule_.clear();
+                    current_molecule_.set_name("Untitled");
+                    editor_state_.commands.clear();
+                    editor_state_.selection.clear();
+                    mol_renderer_.upload(current_molecule_);
+                    state_.view_mode = ui::ViewMode::MolecularOrbital;
+                    has_mo_data_ = false;
+                    has_cube_data_ = false;
+                    use_cube_fallback_ = false;
+                    clear_mo_summary(state_);
+                    state_.molecule_loaded = false;
+                    state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
+                }
                 if (ImGui::MenuItem("Open Molden...")) {
                     try {
                         const std::string path = ui::open_file_dialog("Open Molden File", "molden");
@@ -278,6 +322,35 @@ void App::run() {
                 ImGui::EndMenu();
             }
 
+            if (ImGui::BeginMenu("Edit")) {
+                if (ImGui::MenuItem("Undo", "Ctrl+Z", false, editor_state_.commands.can_undo())) {
+                    editor_state_.commands.undo(current_molecule_);
+                }
+                if (ImGui::MenuItem("Redo", "Ctrl+Shift+Z", false, editor_state_.commands.can_redo())) {
+                    editor_state_.commands.redo(current_molecule_);
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Select All", "Ctrl+A")) {
+                    editor_state_.selection.clear();
+                    for (int i = 0; i < current_molecule_.num_atoms(); ++i) {
+                        editor_state_.selection.toggle_atom(i);
+                    }
+                }
+                if (ImGui::MenuItem("Deselect All", "Escape")) {
+                    editor_state_.selection.clear();
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Add Hydrogens")) {
+                    editor_state_.commands.execute(
+                        std::make_unique<sbox::editor::AddHydrogensCommand>(-1), current_molecule_);
+                }
+                if (ImGui::MenuItem("Remove Hydrogens")) {
+                    editor_state_.commands.execute(
+                        std::make_unique<sbox::editor::RemoveHydrogensCommand>(), current_molecule_);
+                }
+                ImGui::EndMenu();
+            }
+
             if (ImGui::BeginMenu("View")) {
                 if (ImGui::MenuItem("Reset Layout")) {
                     dock_layout_built = false;
@@ -324,14 +397,19 @@ void App::run() {
                 ImGuiID orbital_node = left_node;
                 ImGuiID properties_node = 0;
                 ImGui::DockBuilderSplitNode(orbital_node, ImGuiDir_Down, 0.45f, &properties_node, &orbital_node);
+                ImGuiID editor_node = left_node;
+                ImGuiID browser_stack_node = 0;
+                ImGui::DockBuilderSplitNode(editor_node, ImGuiDir_Down, 0.32f, &browser_stack_node, &editor_node);
 
-                ImGui::DockBuilderDockWindow("Orbital Browser", orbital_node);
+                ImGui::DockBuilderDockWindow("Editor", editor_node);
+                ImGui::DockBuilderDockWindow("Orbital Browser", browser_stack_node);
                 ImGui::DockBuilderDockWindow("Properties", properties_node);
                 ImGui::DockBuilderDockWindow("Energy Levels", properties_node);
                 ImGui::DockBuilderDockWindow("3D Viewport", center_node);
+                ImGui::DockBuilderDockWindow("Computation", right_node);
+                ImGui::DockBuilderDockWindow("Results", right_node);
                 ImGui::DockBuilderDockWindow("Periodic Table", bottom_center_right_node);
                 ImGui::DockBuilderFinish(dockspace_id);
-                (void)right_node;
             }
 
             dock_layout_built = true;
@@ -342,6 +420,9 @@ void App::run() {
         }
 
         ui::draw_periodic_table(state_);
+        if (state_.view_mode == ui::ViewMode::MolecularOrbital) {
+            ui::draw_editor_toolbar(editor_state_, current_molecule_);
+        }
         ui::draw_orbital_browser(state_);
         if (state_.view_mode == ui::ViewMode::MolecularOrbital) {
             ui::draw_molecule_info(state_, current_molecule_);
@@ -353,8 +434,196 @@ void App::run() {
         } else {
             ui::draw_energy_diagram(state_);
         }
+        ui::draw_computation_panel(state_, backend_);
+        if (latest_result_.has_value() && latest_result_->converged()) {
+            ui::draw_results_panel(state_, *latest_result_, current_molecule_);
+        }
+
+        if (state_.computation.run_requested && !state_.computation.job_running && state_.molecule_loaded) {
+            state_.computation.run_requested = false;
+            try {
+                const sbox::backend::JobSpec spec = makeJobSpecFromState();
+                state_.computation.active_job_id = backend_.submit(spec);
+                state_.computation.job_running = true;
+                state_.computation.job_completed = false;
+                state_.computation.last_error.clear();
+                state_.computation.last_progress_iteration = 0;
+                state_.computation.scf_plot_energies.clear();
+            } catch (const std::exception& ex) {
+                state_.computation.last_error = ex.what();
+                state_.computation.job_running = false;
+            }
+        }
+
+        if (state_.computation.apply_results_requested) {
+            state_.computation.apply_results_requested = false;
+            if (const sbox::backend::JobResult* job_result = backend_.result(state_.computation.active_job_id)) {
+                applyBackendResult(*job_result);
+            }
+        }
 
         const ui::ViewportPanelState viewport_state = ui::draw_viewport(state_, viewport_color_tex_);
+
+        if (state_.view_mode == ui::ViewMode::MolecularOrbital && viewport_state.hovered) {
+            const ImVec2 mouse_pos = ImGui::GetIO().MousePos;
+            const sbox::editor::Ray ray = sbox::editor::screen_to_ray(
+                mouse_pos.x,
+                mouse_pos.y,
+                viewport_state.pos,
+                viewport_state.size,
+                camera_.inv_view_projection());
+
+            const bool shift = ImGui::GetIO().KeyShift;
+            const bool ctrl = ImGui::GetIO().KeyCtrl;
+            sbox::editor::EditorMode* mode = editor_state_.active_mode();
+
+            if (mode != nullptr) {
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    if (editor_state_.current_mode == ui::EditorState::Mode::Select) {
+                        const sbox::editor::PickResult hit = sbox::editor::pick(ray, current_molecule_);
+                        editor_consuming_left_drag_ = (hit.type != sbox::editor::PickResult::Type::None);
+                    } else {
+                        editor_consuming_left_drag_ = true;
+                    }
+                    mode->on_mouse_down(ray, 0, shift, current_molecule_, editor_state_.selection, editor_state_.commands);
+                }
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                    mode->on_mouse_down(ray, 1, shift, current_molecule_, editor_state_.selection, editor_state_.commands);
+                }
+
+                if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                    mode->on_mouse_up(ray, 0, current_molecule_, editor_state_.selection, editor_state_.commands);
+                    editor_consuming_left_drag_ = false;
+                }
+                if (ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+                    mode->on_mouse_up(ray, 1, current_molecule_, editor_state_.selection, editor_state_.commands);
+                }
+
+                const bool dragging = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+                const ImVec2 delta = ImGui::GetIO().MouseDelta;
+                mode->on_mouse_move(ray, delta.x, delta.y, dragging, current_molecule_, editor_state_.selection, editor_state_.commands);
+
+                struct KeyMap { ImGuiKey imgui; int glfw; };
+                const std::array<KeyMap, 11> keys = {{
+                    {ImGuiKey_A, GLFW_KEY_A},
+                    {ImGuiKey_Escape, GLFW_KEY_ESCAPE},
+                    {ImGuiKey_Delete, GLFW_KEY_DELETE},
+                    {ImGuiKey_Backspace, GLFW_KEY_BACKSPACE},
+                    {ImGuiKey_Z, GLFW_KEY_Z},
+                    {ImGuiKey_Y, GLFW_KEY_Y},
+                    {ImGuiKey_1, GLFW_KEY_1},
+                    {ImGuiKey_6, GLFW_KEY_6},
+                    {ImGuiKey_7, GLFW_KEY_7},
+                    {ImGuiKey_8, GLFW_KEY_8},
+                    {ImGuiKey_9, GLFW_KEY_9},
+                }};
+                for (const KeyMap& key : keys) {
+                    if (ImGui::IsKeyPressed(key.imgui)) {
+                        mode->on_key(key.glfw, ctrl, shift, current_molecule_, editor_state_.selection, editor_state_.commands);
+                    }
+                }
+            }
+
+            if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Z)) {
+                if (shift) {
+                    editor_state_.commands.redo(current_molecule_);
+                } else {
+                    editor_state_.commands.undo(current_molecule_);
+                }
+            }
+            if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y)) {
+                editor_state_.commands.redo(current_molecule_);
+            }
+            if (ctrl && ImGui::IsKeyPressed(ImGuiKey_A)) {
+                editor_state_.selection.clear();
+                for (int i = 0; i < current_molecule_.num_atoms(); ++i) {
+                    editor_state_.selection.toggle_atom(i);
+                }
+            }
+        }
+
+        {
+            static std::string last_editor_signature;
+            const std::string editor_signature =
+                std::to_string(editor_state_.commands.size()) + "|" +
+                editor_state_.commands.undo_description() + "|" +
+                editor_state_.commands.redo_description() + "|" +
+                std::to_string(current_molecule_.num_atoms()) + "|" +
+                std::to_string(current_molecule_.num_bonds());
+            if (editor_signature != last_editor_signature) {
+                last_editor_signature = editor_signature;
+                mol_renderer_.upload(current_molecule_);
+                state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
+                state_.molecule_loaded = current_molecule_.num_atoms() > 0;
+            }
+        }
+
+        if (state_.view_mode == ui::ViewMode::MolecularOrbital) {
+            sbox::editor::EditorMode* mode = editor_state_.active_mode();
+            if (mode != nullptr) {
+                ImDrawList* draw_list = ImGui::GetForegroundDrawList();
+                const Eigen::Matrix4f vp = camera_.projectionMatrix() * camera_.viewMatrix();
+                mode->draw_overlay(draw_list,
+                                   current_molecule_,
+                                   editor_state_.selection,
+                                   vp,
+                                   viewport_state.pos,
+                                   viewport_state.size);
+            }
+            ui::draw_context_menu(editor_state_.context_menu,
+                                  current_molecule_,
+                                  editor_state_.selection,
+                                  editor_state_.commands);
+            if (editor_state_.context_menu.center_view_requested) {
+                editor_state_.context_menu.center_view_requested = false;
+                Eigen::Vector3f target = Eigen::Vector3f::Zero();
+                if (current_molecule_.num_atoms() > 0) {
+                    target = current_molecule_.center_of_mass().cast<float>();
+                }
+                camera_.setTarget(target);
+            }
+            if (editor_state_.context_menu.fit_view_requested) {
+                editor_state_.context_menu.fit_view_requested = false;
+                Eigen::Vector3f target = Eigen::Vector3f::Zero();
+                if (current_molecule_.num_atoms() > 0) {
+                    target = current_molecule_.center_of_mass().cast<float>();
+                }
+                camera_.setTarget(target);
+                camera_.setDistance(std::max(10.0f, state_.mol_bound_radius * 1.8f));
+            }
+        }
+
+        if ((state_.show_charges || state_.show_bond_orders || state_.show_dipole) &&
+            state_.computation.active_job_id >= 0) {
+            if (const sbox::backend::JobResult* job_result = backend_.result(state_.computation.active_job_id)) {
+                const Eigen::Matrix4f view = camera_.viewMatrix();
+                const Eigen::Matrix4f proj = camera_.projectionMatrix();
+                if (state_.show_charges && !job_result->mulliken_charges.empty()) {
+                    ui::draw_charge_labels(current_molecule_,
+                                           job_result->mulliken_charges,
+                                           view,
+                                           proj,
+                                           viewport_state.pos,
+                                           viewport_state.size);
+                }
+                if (state_.show_bond_orders && job_result->mayer_bond_orders.size() > 0) {
+                    ui::draw_bond_order_labels(current_molecule_,
+                                               job_result->mayer_bond_orders,
+                                               view,
+                                               proj,
+                                               viewport_state.pos,
+                                               viewport_state.size);
+                }
+                if (state_.show_dipole && job_result->dipole_moment.norm() > 1.0e-6) {
+                    ui::draw_dipole_arrow(current_molecule_,
+                                          job_result->dipole_moment,
+                                          view,
+                                          proj,
+                                          viewport_state.pos,
+                                          viewport_state.size);
+                }
+            }
+        }
         ui::draw_status_bar(state_);
         const int new_width = std::max(1, static_cast<int>(std::floor(viewport_state.size.x)));
         const int new_height = std::max(1, static_cast<int>(std::floor(viewport_state.size.y)));
@@ -366,7 +635,13 @@ void App::run() {
         const bool middle_drag = glfwGetMouseButton(window_->handle(), GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
 
         const ImVec2 mouse_delta = ImGui::GetIO().MouseDelta;
-        camera_.handleRotationDrag(mouse_delta.x, mouse_delta.y, viewport_state.hovered && left_drag);
+        bool allow_camera_rotation = true;
+        if (state_.view_mode == ui::ViewMode::MolecularOrbital) {
+            if (editor_state_.current_mode != ui::EditorState::Mode::Select || editor_consuming_left_drag_) {
+                allow_camera_rotation = false;
+            }
+        }
+        camera_.handleRotationDrag(mouse_delta.x, mouse_delta.y, viewport_state.hovered && left_drag && allow_camera_rotation);
         camera_.handlePanDrag(mouse_delta.x, mouse_delta.y, viewport_state.hovered && middle_drag);
         camera_.handleScroll(scroll_delta_, viewport_state.hovered);
         scroll_delta_ = 0.0f;
@@ -552,26 +827,39 @@ int App::find_homo_index() const {
     return homo;
 }
 
-void App::loadMoldenFile(const std::string& path) {
-    current_mo_data_ = sbox::molden::parse_molden_file(path);
+float App::compute_mol_bound_radius(const sbox::chem::MolecularSystem& mol) const {
+    float max_r = 5.0f;
+    const Eigen::Vector3d com = mol.num_atoms() > 0 ? mol.center_of_mass() : Eigen::Vector3d::Zero();
+    for (int i = 0; i < mol.num_atoms(); ++i) {
+        const float r = static_cast<float>((mol.atom(i).position - com).norm()) + 10.0f;
+        max_r = std::max(max_r, r);
+    }
+    return max_r;
+}
+
+void App::applyMOData(const sbox::basis::MOData& mo_data, const std::string& name_hint) {
+    current_mo_data_ = mo_data;
     current_molecule_.clear();
-    current_molecule_.set_name(std::filesystem::path(path).filename().string());
+    current_molecule_.set_name(name_hint);
 
     const std::size_t atom_count = std::min(current_mo_data_.atom_positions.size(), current_mo_data_.atomic_numbers.size());
     for (std::size_t i = 0; i < atom_count; ++i) {
         current_molecule_.add_atom({current_mo_data_.atomic_numbers[i], current_mo_data_.atom_positions[i], "", 0});
     }
+    current_molecule_.set_charge(state_.computation.charge);
+    current_molecule_.set_multiplicity(state_.computation.multiplicity);
     current_molecule_.perceive_bonds();
     mol_renderer_.upload(current_molecule_);
 
     use_cube_fallback_ = !basis_textures_.upload(current_mo_data_);
     has_mo_data_ = !use_cube_fallback_;
     has_cube_data_ = false;
+    state_.molecule_loaded = current_molecule_.num_atoms() > 0;
     state_.mol_has_mo_summary = true;
     state_.mol_num_basis = current_mo_data_.basis.num_basis_functions();
     state_.mol_total_energy_h = current_mo_data_.total_energy;
 
-    update_bound_radius_from_molecule(state_, current_molecule_);
+    state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
 
     state_.view_mode = ui::ViewMode::MolecularOrbital;
     state_.num_mo = static_cast<int>(current_mo_data_.coefficients.cols());
@@ -583,6 +871,100 @@ void App::loadMoldenFile(const std::string& path) {
     } else {
         state_.mol_homo_lumo_gap_ev = 0.0;
     }
+}
+
+void App::applyBackendResult(const sbox::backend::JobResult& result) {
+    if (result.has_optimized_geometry) {
+        current_molecule_ = result.optimized_geometry;
+        mol_renderer_.upload(current_molecule_);
+        state_.molecule_loaded = current_molecule_.num_atoms() > 0;
+        state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
+    }
+
+    if (result.has_mo_data) {
+        const std::string name_hint = current_molecule_.name().empty() ? "Backend Result" : current_molecule_.name();
+        applyMOData(result.mo_data, name_hint);
+        return;
+    }
+
+    if (result.has_homo_cube) {
+        if (!volume_texture_.upload(result.homo_cube)) {
+            throw std::runtime_error("Failed to upload HOMO cube result");
+        }
+        current_molecule_.clear();
+        for (std::size_t i = 0; i < result.homo_cube.atom_Z.size() && i < result.homo_cube.atom_pos.size(); ++i) {
+            current_molecule_.add_atom({result.homo_cube.atom_Z[i], result.homo_cube.atom_pos[i], "", 0});
+        }
+        current_molecule_.perceive_bonds();
+        mol_renderer_.upload(current_molecule_);
+        has_cube_data_ = true;
+        has_mo_data_ = false;
+        use_cube_fallback_ = true;
+        state_.molecule_loaded = current_molecule_.num_atoms() > 0;
+        state_.view_mode = ui::ViewMode::MolecularOrbital;
+        state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
+        clear_mo_summary(state_);
+        return;
+    }
+
+    if (result.has_density_cube) {
+        if (!volume_texture_.upload(result.density_cube)) {
+            throw std::runtime_error("Failed to upload density cube result");
+        }
+        current_molecule_.clear();
+        for (std::size_t i = 0; i < result.density_cube.atom_Z.size() && i < result.density_cube.atom_pos.size(); ++i) {
+            current_molecule_.add_atom({result.density_cube.atom_Z[i], result.density_cube.atom_pos[i], "", 0});
+        }
+        current_molecule_.perceive_bonds();
+        mol_renderer_.upload(current_molecule_);
+        has_cube_data_ = true;
+        has_mo_data_ = false;
+        use_cube_fallback_ = true;
+        state_.molecule_loaded = current_molecule_.num_atoms() > 0;
+        state_.view_mode = ui::ViewMode::MolecularOrbital;
+        state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
+        clear_mo_summary(state_);
+    }
+}
+
+sbox::backend::JobSpec App::makeJobSpecFromState() const {
+    if (current_molecule_.num_atoms() == 0) {
+        throw std::runtime_error("No molecule loaded");
+    }
+
+    sbox::backend::JobSpec spec;
+    spec.geometry = current_molecule_;
+    spec.geometry.set_charge(state_.computation.charge);
+    spec.geometry.set_multiplicity(state_.computation.multiplicity);
+    spec.method = state_.computation.method;
+    spec.basis = state_.computation.basis;
+    spec.charge = state_.computation.charge;
+    spec.multiplicity = state_.computation.multiplicity;
+    spec.optimize_geometry = state_.computation.optimize;
+    spec.solvent = state_.computation.solvent;
+    spec.properties = {
+        sbox::backend::PropertyRequest::MullikenCharges,
+        sbox::backend::PropertyRequest::DipoleMoment,
+    };
+
+    if (sbox::backend::method_is_xtb(spec.method)) {
+        spec.properties.push_back(sbox::backend::PropertyRequest::MoldenFile);
+    } else {
+        spec.properties.push_back(sbox::backend::PropertyRequest::MoldenFile);
+        spec.properties.push_back(sbox::backend::PropertyRequest::CubeHOMO);
+        spec.properties.push_back(sbox::backend::PropertyRequest::CubeLUMO);
+    }
+
+    if (spec.optimize_geometry) {
+        spec.properties.push_back(sbox::backend::PropertyRequest::Optimization);
+    }
+    return spec;
+}
+
+void App::loadMoldenFile(const std::string& path) {
+    applyMOData(sbox::molden::parse_molden_file(path), std::filesystem::path(path).filename().string());
+    state_.computation.charge = current_molecule_.charge();
+    state_.computation.multiplicity = current_molecule_.multiplicity();
 }
 
 void App::loadCubeFile(const std::string& path) {
@@ -602,9 +984,12 @@ void App::loadCubeFile(const std::string& path) {
     has_cube_data_ = true;
     use_cube_fallback_ = true;
     has_mo_data_ = false;
+    state_.molecule_loaded = current_molecule_.num_atoms() > 0;
     state_.view_mode = ui::ViewMode::MolecularOrbital;
-    update_bound_radius_from_molecule(state_, current_molecule_);
+    state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
     clear_mo_summary(state_);
+    state_.computation.charge = current_molecule_.charge();
+    state_.computation.multiplicity = current_molecule_.multiplicity();
 }
 
 void App::loadXYZFile(const std::string& path) {
@@ -614,9 +999,12 @@ void App::loadXYZFile(const std::string& path) {
     has_mo_data_ = false;
     has_cube_data_ = false;
     use_cube_fallback_ = false;
+    state_.molecule_loaded = current_molecule_.num_atoms() > 0;
     state_.view_mode = ui::ViewMode::MolecularOrbital;
-    update_bound_radius_from_molecule(state_, current_molecule_);
+    state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
     clear_mo_summary(state_);
+    state_.computation.charge = current_molecule_.charge();
+    state_.computation.multiplicity = current_molecule_.multiplicity();
 }
 
 void App::loadSDFFile(const std::string& path) {
@@ -626,9 +1014,12 @@ void App::loadSDFFile(const std::string& path) {
     has_mo_data_ = false;
     has_cube_data_ = false;
     use_cube_fallback_ = false;
+    state_.molecule_loaded = current_molecule_.num_atoms() > 0;
     state_.view_mode = ui::ViewMode::MolecularOrbital;
-    update_bound_radius_from_molecule(state_, current_molecule_);
+    state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
     clear_mo_summary(state_);
+    state_.computation.charge = current_molecule_.charge();
+    state_.computation.multiplicity = current_molecule_.multiplicity();
 }
 
 void App::loadFchkFile(const std::string& path) {
@@ -660,7 +1051,8 @@ void App::loadFchkFile(const std::string& path) {
     }
     has_cube_data_ = false;
     state_.view_mode = ui::ViewMode::MolecularOrbital;
-    update_bound_radius_from_molecule(state_, current_molecule_);
+    state_.molecule_loaded = current_molecule_.num_atoms() > 0;
+    state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
     state_.num_mo = static_cast<int>(fchk.mo_energies.size());
     state_.homo_index = -1;
     for (int i = 0; i < fchk.occupations.size(); ++i) {
@@ -678,6 +1070,8 @@ void App::loadFchkFile(const std::string& path) {
     } else {
         state_.mol_homo_lumo_gap_ev = 0.0;
     }
+    state_.computation.charge = current_molecule_.charge();
+    state_.computation.multiplicity = current_molecule_.multiplicity();
 }
 
 float App::computeMaxDensityEstimate() const {
@@ -824,6 +1218,14 @@ void App::renderViewportToTexture() {
                              camera_.projectionMatrix(),
                              camera_.camera_position(),
                              static_cast<sbox::render::MolRenderMode>(state_.mol_render_mode));
+        if (!editor_state_.selection.empty()) {
+            mol_renderer_.render_selection(camera_.viewMatrix(),
+                                           camera_.projectionMatrix(),
+                                           camera_.camera_position(),
+                                           current_molecule_,
+                                           editor_state_.selection,
+                                           static_cast<sbox::render::MolRenderMode>(state_.mol_render_mode));
+        }
     }
 
     Shader* active = nullptr;

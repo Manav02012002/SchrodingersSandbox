@@ -1,9 +1,12 @@
 #include "renderer/mol_renderer.h"
 
+#include "core/elements.h"
+
 #include <glad/gl.h>
 
 #include <array>
 #include <cstddef>
+#include <cstdio>
 #include <stdexcept>
 
 namespace sbox::render {
@@ -109,6 +112,26 @@ float vdw_radius(int Z) {
 
 constexpr float kBondRadiusBallAndStick = 0.15f;
 constexpr float kBondRadiusStickOnly = 0.08f;
+
+ImVec2 world_to_screen(const Eigen::Vector3f& world_pos,
+                       const Eigen::Matrix4f& vp_matrix,
+                       const ImVec2& viewport_pos,
+                       const ImVec2& viewport_size,
+                       bool& visible) {
+    const Eigen::Vector4f clip = vp_matrix * Eigen::Vector4f(world_pos.x(), world_pos.y(), world_pos.z(), 1.0f);
+    visible = false;
+    if (clip.w() <= 0.0f) {
+        return {};
+    }
+    const Eigen::Vector3f ndc = clip.head<3>() / clip.w();
+    if (ndc.x() < -1.0f || ndc.x() > 1.0f || ndc.y() < -1.0f || ndc.y() > 1.0f || ndc.z() < -1.0f || ndc.z() > 1.0f) {
+        return {};
+    }
+    visible = true;
+    return ImVec2(
+        viewport_pos.x + (ndc.x() * 0.5f + 0.5f) * viewport_size.x,
+        viewport_pos.y + (1.0f - (ndc.y() * 0.5f + 0.5f)) * viewport_size.y);
+}
 
 void create_quad_buffer(unsigned int* vao,
                         unsigned int* vertex_buffer,
@@ -347,6 +370,156 @@ void MolRenderer::render(const Eigen::Matrix4f& view_matrix,
             glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, bond_count_);
         }
         glBindVertexArray(0);
+    }
+}
+
+void MolRenderer::render_highlights(const Eigen::Matrix4f& view_matrix,
+                                    const Eigen::Matrix4f& proj_matrix,
+                                    const Eigen::Vector3f& camera_pos,
+                                    const std::vector<float>& atom_data,
+                                    const std::vector<float>& bond_data,
+                                    const Eigen::Vector3f& highlight_color,
+                                    MolRenderMode mode) {
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glDepthMask(GL_FALSE);
+    glEnable(GL_DEPTH_TEST);
+
+    if (!atom_data.empty() && mode != MolRenderMode::StickOnly && mode != MolRenderMode::Wireframe) {
+        std::vector<float> draw_data = atom_data;
+        for (std::size_t i = 0; i + 7 < draw_data.size(); i += 8) {
+            draw_data[i + 3] *= 1.3f;
+            draw_data[i + 4] = highlight_color.x();
+            draw_data[i + 5] = highlight_color.y();
+            draw_data[i + 6] = highlight_color.z();
+        }
+        upload_atom_instances(atom_instance_vbo_, draw_data);
+
+        atom_shader_->bind();
+        atom_shader_->setUniform("u_view", view_matrix);
+        atom_shader_->setUniform("u_proj", proj_matrix);
+        atom_shader_->setUniform("u_camera_pos", camera_pos);
+        glBindVertexArray(atom_vao_);
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, static_cast<int>(draw_data.size() / 8));
+        glBindVertexArray(0);
+    }
+
+    if (!bond_data.empty() && mode != MolRenderMode::SpaceFilling) {
+        std::vector<float> draw_data = bond_data;
+        for (std::size_t i = 0; i + 12 < draw_data.size(); i += 13) {
+            draw_data[i + 6] = highlight_color.x();
+            draw_data[i + 7] = highlight_color.y();
+            draw_data[i + 8] = highlight_color.z();
+            draw_data[i + 9] = highlight_color.x();
+            draw_data[i + 10] = highlight_color.y();
+            draw_data[i + 11] = highlight_color.z();
+            draw_data[i + 12] *= 1.5f;
+        }
+        upload_bond_instances(bond_instance_vbo_, draw_data);
+
+        bond_shader_->bind();
+        bond_shader_->setUniform("u_view", view_matrix);
+        bond_shader_->setUniform("u_proj", proj_matrix);
+        bond_shader_->setUniform("u_camera_pos", camera_pos);
+        bond_shader_->setUniform("u_wireframe", 0);
+        glBindVertexArray(bond_vao_);
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, static_cast<int>(draw_data.size() / 13));
+        glBindVertexArray(0);
+    }
+
+    upload_atom_instances(atom_instance_vbo_, atom_instances_);
+    upload_bond_instances(bond_instance_vbo_, bond_instances_);
+    glDepthMask(GL_TRUE);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_BLEND);
+}
+
+void MolRenderer::render_selection(const Eigen::Matrix4f& view_matrix,
+                                   const Eigen::Matrix4f& proj_matrix,
+                                   const Eigen::Vector3f& camera_pos,
+                                   const sbox::chem::MolecularSystem& mol,
+                                   const sbox::editor::Selection& selection,
+                                   MolRenderMode mode) {
+    if (selection.empty() || !has_data()) {
+        return;
+    }
+
+    std::vector<float> atom_data;
+    atom_data.reserve(static_cast<std::size_t>(selection.atoms.size()) * 8);
+    for (int atom_index : selection.atoms) {
+        if (atom_index < 0 || atom_index >= mol.num_atoms()) {
+            continue;
+        }
+        const sbox::chem::Atom& atom = mol.atom(atom_index);
+        atom_data.push_back(static_cast<float>(atom.position.x()));
+        atom_data.push_back(static_cast<float>(atom.position.y()));
+        atom_data.push_back(static_cast<float>(atom.position.z()));
+        atom_data.push_back(mode == MolRenderMode::SpaceFilling ? vdw_radius(atom.Z) : atom_render_radius(atom.Z));
+        atom_data.push_back(0.15f);
+        atom_data.push_back(0.55f);
+        atom_data.push_back(0.65f);
+        atom_data.push_back(static_cast<float>(atom.Z));
+    }
+
+    std::vector<float> bond_data;
+    bond_data.reserve(static_cast<std::size_t>(selection.bonds.size()) * 13);
+    for (int bond_index : selection.bonds) {
+        if (bond_index < 0 || bond_index >= mol.num_bonds()) {
+            continue;
+        }
+        const sbox::chem::Bond& bond = mol.bond(bond_index);
+        const sbox::chem::Atom& atom_a = mol.atom(bond.atom_i);
+        const sbox::chem::Atom& atom_b = mol.atom(bond.atom_j);
+        bond_data.push_back(static_cast<float>(atom_a.position.x()));
+        bond_data.push_back(static_cast<float>(atom_a.position.y()));
+        bond_data.push_back(static_cast<float>(atom_a.position.z()));
+        bond_data.push_back(static_cast<float>(atom_b.position.x()));
+        bond_data.push_back(static_cast<float>(atom_b.position.y()));
+        bond_data.push_back(static_cast<float>(atom_b.position.z()));
+        bond_data.push_back(0.15f);
+        bond_data.push_back(0.55f);
+        bond_data.push_back(0.65f);
+        bond_data.push_back(0.15f);
+        bond_data.push_back(0.55f);
+        bond_data.push_back(0.65f);
+        bond_data.push_back(mode == MolRenderMode::StickOnly ? kBondRadiusStickOnly : kBondRadiusBallAndStick);
+    }
+
+    render_highlights(view_matrix, proj_matrix, camera_pos, atom_data, bond_data, Eigen::Vector3f(0.15f, 0.55f, 0.65f), mode);
+}
+
+void MolRenderer::render_atom_labels(const sbox::chem::MolecularSystem& mol,
+                                     const Eigen::Matrix4f& vp_matrix,
+                                     const ImVec2& viewport_pos,
+                                     const ImVec2& viewport_size,
+                                     bool show_indices,
+                                     bool show_symbols) {
+    if (!show_symbols && !show_indices) {
+        return;
+    }
+
+    ImDrawList* draw_list = ImGui::GetForegroundDrawList();
+    for (int i = 0; i < mol.num_atoms(); ++i) {
+        const sbox::chem::Atom& atom = mol.atom(i);
+        if (atom.Z == 1) {
+            continue;
+        }
+        bool visible = false;
+        const ImVec2 p = world_to_screen(atom.position.cast<float>(), vp_matrix, viewport_pos, viewport_size, visible);
+        if (!visible) {
+            continue;
+        }
+
+        char label[32];
+        if (show_symbols && show_indices) {
+            std::snprintf(label, sizeof(label), "%s%d", sbox::elements::get_element(atom.Z).symbol, i + 1);
+        } else if (show_symbols) {
+            std::snprintf(label, sizeof(label), "%s", sbox::elements::get_element(atom.Z).symbol);
+        } else {
+            std::snprintf(label, sizeof(label), "%d", i + 1);
+        }
+        const ImVec2 text_size = ImGui::CalcTextSize(label);
+        draw_list->AddText(ImVec2(p.x - 0.5f * text_size.x, p.y - 0.5f * text_size.y), IM_COL32(245, 248, 255, 220), label);
     }
 }
 

@@ -13,6 +13,8 @@ public:
     void handleRotationDrag(float dx, float dy, bool apply);
     void handlePanDrag(float dx, float dy, bool apply);
     void handleScroll(float yoffset, bool apply);
+    void setTarget(const Eigen::Vector3f& target);
+    void setDistance(float distance);
 
     [[nodiscard]] Eigen::Matrix4f viewMatrix() const;
     [[nodiscard]] Eigen::Matrix4f projectionMatrix() const;

@@ -77,8 +77,14 @@ ViewportPanelState draw_viewport(AppState& state, unsigned int texture_id) {
         }
 
         ImGui::Separator();
+        ImGui::TextUnformatted("Overlays");
+        ImGui::Checkbox("Partial Charges", &state.show_charges);
+        ImGui::Checkbox("Bond Orders", &state.show_bond_orders);
+        ImGui::Checkbox("Dipole Moment", &state.show_dipole);
+        ImGui::Separator();
 
         viewport.size = ImGui::GetContentRegionAvail();
+        viewport.pos = ImGui::GetCursorScreenPos();
 
         if (viewport.size.x > 0.0f && viewport.size.y > 0.0f && texture_id != 0U) {
             ImGui::Image((ImTextureID)(intptr_t)texture_id,

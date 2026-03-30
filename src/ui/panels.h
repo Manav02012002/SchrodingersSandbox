@@ -12,6 +12,7 @@
 namespace sbox::ui {
 
 struct ViewportPanelState {
+    ImVec2 pos{0.0f, 0.0f};
     ImVec2 size{0.0f, 0.0f};
     bool hovered = false;
 };

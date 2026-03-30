@@ -55,6 +55,14 @@ void Camera::handleScroll(float yoffset, bool apply) {
     distance_ = std::clamp(distance_, 0.5f, 200.0f);
 }
 
+void Camera::setTarget(const Eigen::Vector3f& target) {
+    target_ = target;
+}
+
+void Camera::setDistance(float distance) {
+    distance_ = std::clamp(distance, 0.5f, 200.0f);
+}
+
 Eigen::Vector3f Camera::cameraPosition() const {
     return target_ + orientation_ * Eigen::Vector3f(0.0f, 0.0f, distance_);
 }

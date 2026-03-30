@@ -1,22 +1,32 @@
 #include "ui/app.h"
 
+#include "ui/bond_order_panel.h"
 #include "core/gaussian_eval.h"
 #include "core/hydrogen.h"
 #include "core/molden_parser.h"
 #include "ui/charge_overlay.h"
 #include "ui/computation_panel.h"
 #include "ui/context_menu.h"
+#include "ui/dos_panel.h"
 #include "ui/editor_toolbar.h"
+#include "ui/esp_controls.h"
 #include "ui/file_dialog.h"
+#include "ui/ir_spectrum_panel.h"
 #include "ui/mo_diagram.h"
+#include "ui/mo_diagram_plot.h"
 #include "ui/molecule_info.h"
+#include "ui/orbital_composition_panel.h"
 #include "ui/panels.h"
+#include "ui/plot_utils.h"
+#include "ui/population_panel.h"
+#include "ui/property_dashboard.h"
 #include "ui/results_panel.h"
 #include "ui/setup_wizard.h"
 
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 #include <imgui.h>
+#include <implot.h>
 #include <imgui_internal.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl3.h>
@@ -163,6 +173,7 @@ App::App() {
     orbital_shader_ = try_load_shader("data/shaders/orbital_raymarch.vert", "data/shaders/orbital_raymarch.frag", "Orbital");
     mo_shader_ = try_load_shader("data/shaders/mo_raymarch.vert", "data/shaders/mo_raymarch.frag", "MO");
     cube_shader_ = try_load_shader("data/shaders/cube_raymarch.vert", "data/shaders/cube_raymarch.frag", "Cube");
+    esp_shader_ = try_load_shader("data/shaders/mo_raymarch.vert", "data/shaders/esp_surface.frag", "ESP Surface");
 
     glGenVertexArrays(1, &fullscreen_vao_);
 
@@ -403,11 +414,19 @@ void App::run() {
 
                 ImGui::DockBuilderDockWindow("Editor", editor_node);
                 ImGui::DockBuilderDockWindow("Orbital Browser", browser_stack_node);
-                ImGui::DockBuilderDockWindow("Properties", properties_node);
+                ImGui::DockBuilderDockWindow("Atomic Properties", properties_node);
                 ImGui::DockBuilderDockWindow("Energy Levels", properties_node);
+                ImGui::DockBuilderDockWindow("MO Energy Diagram", properties_node);
+                ImGui::DockBuilderDockWindow("Density of States", properties_node);
+                ImGui::DockBuilderDockWindow("Orbital Composition", properties_node);
                 ImGui::DockBuilderDockWindow("3D Viewport", center_node);
                 ImGui::DockBuilderDockWindow("Computation", right_node);
                 ImGui::DockBuilderDockWindow("Results", right_node);
+                ImGui::DockBuilderDockWindow("Properties", right_node);
+                ImGui::DockBuilderDockWindow("Population Analysis", right_node);
+                ImGui::DockBuilderDockWindow("Bond Orders", right_node);
+                ImGui::DockBuilderDockWindow("Electrostatic Properties", right_node);
+                ImGui::DockBuilderDockWindow("IR Spectrum", right_node);
                 ImGui::DockBuilderDockWindow("Periodic Table", bottom_center_right_node);
                 ImGui::DockBuilderFinish(dockspace_id);
             }
@@ -429,14 +448,43 @@ void App::run() {
         } else {
             ui::draw_properties(state_);
         }
-        if (state_.view_mode == ui::ViewMode::MolecularOrbital && has_mo_data_) {
+        if (state_.view_mode == ui::ViewMode::MolecularOrbital && has_mo_data_ &&
+            (!latest_result_.has_value() || !latest_result_->has_mo_data)) {
             ui::draw_mo_diagram(state_, current_mo_data_);
         } else {
-            ui::draw_energy_diagram(state_);
+            if (state_.view_mode != ui::ViewMode::MolecularOrbital) {
+                ui::draw_energy_diagram(state_);
+            }
         }
         ui::draw_computation_panel(state_, backend_);
         if (latest_result_.has_value() && latest_result_->converged()) {
             ui::draw_results_panel(state_, *latest_result_, current_molecule_);
+            switch (state_.property_view) {
+            case ui::PropertyView::Dashboard:
+                ui::draw_property_dashboard(state_, *latest_result_, current_molecule_);
+                break;
+            case ui::PropertyView::Population:
+                ui::draw_population_panel(state_, *latest_result_, current_molecule_);
+                break;
+            case ui::PropertyView::BondOrders:
+                ui::draw_bond_order_panel(state_, *latest_result_, current_molecule_);
+                break;
+            case ui::PropertyView::MoDiagram:
+                ui::draw_mo_diagram_plot(state_, *latest_result_);
+                break;
+            case ui::PropertyView::DOS:
+                ui::draw_dos_panel(state_, *latest_result_);
+                break;
+            case ui::PropertyView::OrbitalComposition:
+                ui::draw_orbital_composition_panel(state_, *latest_result_, current_molecule_);
+                break;
+            case ui::PropertyView::IRSpectrum:
+                ui::draw_ir_spectrum_panel(state_, *latest_result_, current_molecule_);
+                break;
+            case ui::PropertyView::ESPControls:
+                ui::draw_esp_controls(state_, *latest_result_);
+                break;
+            }
         }
 
         if (state_.computation.run_requested && !state_.computation.job_running && state_.molecule_loaded) {
@@ -677,6 +725,7 @@ void App::ScrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
 void App::initImGui() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    ImPlot::CreateContext();
 
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
@@ -717,6 +766,7 @@ void App::initImGui() {
     colors[ImGuiCol_TabActive] = accent_active;
     colors[ImGuiCol_TabUnfocused] = ImVec4(0.08f, 0.18f, 0.22f, 1.0f);
     colors[ImGuiCol_TabUnfocusedActive] = ImVec4(0.12f, 0.38f, 0.45f, 1.0f);
+    ui::setup_dark_plot_style();
 
     io.Fonts->Clear();
     constexpr float kFontSize = 15.0f;
@@ -759,6 +809,7 @@ void App::initImGui() {
 void App::shutdownImGui() {
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
+    ImPlot::DestroyContext();
     ImGui::DestroyContext();
 }
 
@@ -884,6 +935,9 @@ void App::applyBackendResult(const sbox::backend::JobResult& result) {
     if (result.has_mo_data) {
         const std::string name_hint = current_molecule_.name().empty() ? "Backend Result" : current_molecule_.name();
         applyMOData(result.mo_data, name_hint);
+        if (result.has_density_cube && result.has_esp_cube) {
+            loadESPSurface(result);
+        }
         return;
     }
 
@@ -924,6 +978,15 @@ void App::applyBackendResult(const sbox::backend::JobResult& result) {
         state_.view_mode = ui::ViewMode::MolecularOrbital;
         state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
         clear_mo_summary(state_);
+        if (result.has_esp_cube) {
+            loadESPSurface(result);
+        }
+    }
+}
+
+void App::loadESPSurface(const sbox::backend::JobResult& result) {
+    if (result.has_density_cube && result.has_esp_cube) {
+        esp_surface_.upload(result.density_cube, result.esp_cube);
     }
 }
 
@@ -1229,7 +1292,9 @@ void App::renderViewportToTexture() {
     }
 
     Shader* active = nullptr;
-    if (use_cube_fallback_ && has_cube_data_ && cube_shader_) {
+    if (state_.show_esp_surface && esp_surface_.is_uploaded() && esp_shader_) {
+        active = esp_shader_.get();
+    } else if (use_cube_fallback_ && has_cube_data_ && cube_shader_) {
         active = cube_shader_.get();
     } else if (has_mo_data_ && mo_shader_) {
         active = mo_shader_.get();
@@ -1243,7 +1308,7 @@ void App::renderViewportToTexture() {
         active->setUniform("u_inv_vp", camera_.inv_view_projection());
         active->setUniform("u_camera_pos", camera_.camera_position());
         active->setUniform("u_render_mode", state_.render_mode);
-        active->setUniform("u_iso_value", state_.iso_value);
+        active->setUniform("u_iso_value", active == esp_shader_.get() ? state_.esp_density_iso : state_.iso_value);
         active->setUniform("u_gamma", state_.gamma);
         active->setUniform("u_max_density", max_density_estimate_);
         active->setUniform("u_bound_radius", state_.mol_bound_radius);
@@ -1253,7 +1318,36 @@ void App::renderViewportToTexture() {
             glUniform2f(res_loc, static_cast<float>(viewport_width_), static_cast<float>(viewport_height_));
         }
 
-        if (!use_cube_fallback_) {
+        if (active == esp_shader_.get()) {
+            esp_surface_.bind(active->id(), 6, 7);
+            const Eigen::Vector3f orig = esp_surface_.origin();
+            const Eigen::Matrix3f w2g = esp_surface_.world_to_grid();
+            const int origin_loc = glGetUniformLocation(active->id(), "u_grid_origin");
+            if (origin_loc >= 0) {
+                glUniform3f(origin_loc, orig.x(), orig.y(), orig.z());
+            }
+            const int w2g_loc = glGetUniformLocation(active->id(), "u_world_to_grid");
+            if (w2g_loc >= 0) {
+                glUniformMatrix3fv(w2g_loc, 1, GL_FALSE, w2g.data());
+            }
+            if (latest_result_.has_value() && latest_result_->has_density_cube) {
+                const int dims_loc = glGetUniformLocation(active->id(), "u_grid_dims");
+                if (dims_loc >= 0) {
+                    glUniform3i(dims_loc,
+                                latest_result_->density_cube.nx,
+                                latest_result_->density_cube.ny,
+                                latest_result_->density_cube.nz);
+                }
+            }
+            const int min_loc = glGetUniformLocation(active->id(), "u_esp_min");
+            if (min_loc >= 0) {
+                glUniform1f(min_loc, state_.esp_auto_range ? esp_surface_.esp_min() : state_.esp_color_min);
+            }
+            const int max_loc = glGetUniformLocation(active->id(), "u_esp_max");
+            if (max_loc >= 0) {
+                glUniform1f(max_loc, state_.esp_auto_range ? esp_surface_.esp_max() : state_.esp_color_max);
+            }
+        } else if (!use_cube_fallback_) {
             const int mo_idx = state_.selected_mo >= 0 ? state_.selected_mo : find_homo_index();
             active->setUniform("u_mo_index", mo_idx);
             active->setUniform("u_num_shells", basis_textures_.num_shells());
@@ -1282,7 +1376,9 @@ void App::renderViewportToTexture() {
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glBindVertexArray(0);
 
-        if (!use_cube_fallback_) {
+        if (active == esp_shader_.get()) {
+            esp_surface_.unbind();
+        } else if (!use_cube_fallback_) {
             basis_textures_.unbind();
         } else {
             volume_texture_.unbind();

@@ -6,6 +6,7 @@ import os
 import sys
 import time
 import traceback
+import importlib
 
 import numpy as np
 
@@ -116,6 +117,195 @@ def _write_progress(progress_path, stage, iteration=0, energy=0.0, message=""):
         )
 
 
+def _is_dft_method(method):
+    return method in ("b3lyp", "pbe", "pbe0", "tpss", "m06-2x", "m062x")
+
+
+def _build_mean_field(mol, method, multiplicity, max_scf_cycles, scf_convergence, solvent):
+    from pyscf import dft, scf
+
+    is_open_shell = int(multiplicity) > 1
+    if method in ("hf", "rhf"):
+        mf = scf.UHF(mol) if is_open_shell else scf.RHF(mol)
+    elif method == "uhf":
+        mf = scf.UHF(mol)
+    elif _is_dft_method(method):
+        xc_map = {
+            "b3lyp": "b3lyp",
+            "pbe": "pbe",
+            "pbe0": "pbe0",
+            "tpss": "tpss",
+            "m06-2x": "m06-2x",
+            "m062x": "m06-2x",
+        }
+        mf = dft.UKS(mol) if is_open_shell else dft.RKS(mol)
+        mf.xc = xc_map[method]
+    elif method == "mp2":
+        mf = scf.UHF(mol) if is_open_shell else scf.RHF(mol)
+    elif method == "ccsd":
+        if is_open_shell:
+            raise ValueError("CCSD driver currently supports closed-shell systems only")
+        mf = scf.RHF(mol)
+    else:
+        raise ValueError(f"Unknown method: {method}")
+
+    mf.max_cycle = int(max_scf_cycles)
+    mf.conv_tol = float(scf_convergence)
+
+    if solvent:
+        mf = mf.ddCOSMO()
+        mf.with_solvent.eps = _solvent_dielectric(solvent)
+
+    return mf
+
+
+def _is_linear_molecule(mol):
+    coords = np.asarray(mol.atom_coords(unit="Bohr"), dtype=float)
+    natom = coords.shape[0]
+    if natom <= 2:
+        return True
+    ref = coords[-1] - coords[0]
+    ref_norm = np.linalg.norm(ref)
+    if ref_norm < 1.0e-10:
+        return False
+    ref /= ref_norm
+    for i in range(1, natom - 1):
+        vec = coords[i] - coords[0]
+        if np.linalg.norm(np.cross(ref, vec)) > 1.0e-4:
+            return False
+    return True
+
+
+def _trim_vibrational_data(mol, frequencies_cm1, normal_modes=None, ir_intensities=None):
+    natom = mol.natm
+    total_modes = 3 * natom
+    if len(frequencies_cm1) != total_modes:
+        return frequencies_cm1, normal_modes, ir_intensities
+
+    n_remove = 5 if _is_linear_molecule(mol) else 6
+    trimmed_freqs = list(frequencies_cm1[n_remove:])
+    trimmed_modes = None if normal_modes is None else list(normal_modes[n_remove:])
+    trimmed_intensities = None if ir_intensities is None else list(ir_intensities[n_remove:])
+    return trimmed_freqs, trimmed_modes, trimmed_intensities
+
+
+def _manual_frequency_analysis(mol, hessian_matrix):
+    natom = mol.natm
+    masses = np.asarray(mol.atom_mass_list(), dtype=float)
+    mass_vec = np.repeat(masses, 3)
+
+    h_flat = np.asarray(hessian_matrix, dtype=float).reshape(3 * natom, 3 * natom)
+    mass_mat = np.sqrt(np.outer(mass_vec, mass_vec))
+    h_mw = h_flat / mass_mat
+
+    eigenvalues, eigenvectors = np.linalg.eigh(h_mw)
+
+    hartree_to_j = 4.3597447222071e-18
+    amu_to_kg = 1.66053906660e-27
+    bohr_to_m = 5.29177210903e-11
+    c_si = 299792458.0
+    freq_factor = np.sqrt(hartree_to_j / (amu_to_kg * bohr_to_m * bohr_to_m)) / (2.0 * np.pi * c_si * 100.0)
+
+    frequencies_cm1 = []
+    normal_modes = []
+    for mode_idx, eigenvalue in enumerate(eigenvalues):
+        freq = np.sqrt(abs(eigenvalue)) * freq_factor
+        frequencies_cm1.append(float(freq if eigenvalue >= 0.0 else -freq))
+
+        raw_mode = eigenvectors[:, mode_idx] / np.sqrt(np.clip(mass_vec, 1.0e-12, None))
+        norm = np.linalg.norm(raw_mode)
+        if norm > 1.0e-12:
+            raw_mode = raw_mode / norm
+        normal_modes.append(raw_mode.astype(float).tolist())
+
+    return frequencies_cm1, normal_modes
+
+
+def _extract_ir_intensities(mf):
+    module_names = []
+    class_name = mf.__class__.__name__.lower()
+    if "uks" in class_name:
+        module_names.extend(["pyscf.prop.infrared.uks", "pyscf.prop.infrared.rks"])
+    elif "rks" in class_name:
+        module_names.extend(["pyscf.prop.infrared.rks"])
+    elif "uhf" in class_name:
+        module_names.extend(["pyscf.prop.infrared.uhf", "pyscf.prop.infrared.rhf"])
+    else:
+        module_names.extend(["pyscf.prop.infrared.rhf"])
+    module_names.extend(["pyscf.prop.infrared"])
+
+    for module_name in module_names:
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+
+        infrared_cls = getattr(module, "Infrared", None)
+        if infrared_cls is None:
+            continue
+        try:
+            ir_obj = infrared_cls(mf)
+            kernel_result = ir_obj.kernel()
+            for attr_name in ("ir_intensity", "ir_intensities", "intensities"):
+                intensities = getattr(ir_obj, attr_name, None)
+                if intensities is not None:
+                    return np.asarray(intensities, dtype=float).reshape(-1).tolist()
+            if isinstance(kernel_result, dict):
+                for key in ("ir_intensity", "ir_intensities", "intensities"):
+                    if key in kernel_result:
+                        return np.asarray(kernel_result[key], dtype=float).reshape(-1).tolist()
+        except Exception:
+            continue
+
+    return None
+
+
+def _run_frequency_analysis(mol, mf, method, progress_path, energy):
+    if method not in ("hf", "rhf") and not _is_dft_method(method):
+        raise ValueError("Frequency calculations are currently supported for HF and DFT methods only")
+
+    _write_progress(progress_path, "hessian", energy=energy, message="Computing Hessian")
+    hessian_matrix = mf.Hessian().kernel()
+
+    frequencies_cm1 = None
+    normal_modes = None
+
+    try:
+        from pyscf.hessian import thermo
+
+        analysis = thermo.harmonic_analysis(mol, hessian_matrix)
+        if isinstance(analysis, dict):
+            for key in ("freq_wavenumber", "freq_wavenumber_cm1", "freq_cm1"):
+                if key in analysis:
+                    frequencies_cm1 = np.asarray(analysis[key], dtype=float).reshape(-1).tolist()
+                    break
+            raw_modes = None
+            for key in ("norm_mode", "normal_mode", "modes"):
+                if key in analysis:
+                    raw_modes = np.asarray(analysis[key], dtype=float)
+                    break
+            if raw_modes is not None:
+                if raw_modes.ndim == 3:
+                    normal_modes = [raw_modes[i].reshape(-1).astype(float).tolist() for i in range(raw_modes.shape[0])]
+                elif raw_modes.ndim == 2:
+                    normal_modes = [raw_modes[:, i].reshape(-1).astype(float).tolist() for i in range(raw_modes.shape[1])]
+    except Exception:
+        frequencies_cm1 = None
+        normal_modes = None
+
+    if frequencies_cm1 is None:
+        frequencies_cm1, normal_modes = _manual_frequency_analysis(mol, hessian_matrix)
+
+    ir_intensities = _extract_ir_intensities(mf)
+    frequencies_cm1, normal_modes, ir_intensities = _trim_vibrational_data(
+        mol, frequencies_cm1, normal_modes, ir_intensities
+    )
+    if ir_intensities is None or len(ir_intensities) != len(frequencies_cm1):
+        ir_intensities = [1.0] * len(frequencies_cm1)
+
+    return frequencies_cm1, ir_intensities, normal_modes
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python3 pyscf_driver.py job.json", file=sys.stderr)
@@ -138,6 +328,9 @@ def main():
         "mayer_bond_orders": [],
         "orbital_energies": [],
         "orbital_occupations": [],
+        "frequencies_cm1": [],
+        "ir_intensities": [],
+        "normal_modes": [],
         "scf_history": [],
         "wall_time": 0.0,
     }
@@ -145,7 +338,7 @@ def main():
     start_time = time.time()
 
     try:
-        from pyscf import cc, dft, gto, mp, scf
+        from pyscf import cc, gto, mp
         from pyscf.tools import cubegen
         from pyscf.tools import molden as molden_tools
 
@@ -171,37 +364,15 @@ def main():
 
         method = job["method"].lower()
         is_open_shell = int(job.get("multiplicity", 1)) > 1
-        if method in ("hf", "rhf"):
-            mf = scf.UHF(mol) if is_open_shell else scf.RHF(mol)
-        elif method == "uhf":
-            mf = scf.UHF(mol)
-        elif method in ("b3lyp", "pbe", "pbe0", "tpss", "m06-2x", "m062x"):
-            xc_map = {
-                "b3lyp": "b3lyp",
-                "pbe": "pbe",
-                "pbe0": "pbe0",
-                "tpss": "tpss",
-                "m06-2x": "m06-2x",
-                "m062x": "m06-2x",
-            }
-            mf = dft.UKS(mol) if is_open_shell else dft.RKS(mol)
-            mf.xc = xc_map[method]
-        elif method == "mp2":
-            mf = scf.UHF(mol) if is_open_shell else scf.RHF(mol)
-        elif method == "ccsd":
-            if is_open_shell:
-                raise ValueError("CCSD driver currently supports closed-shell systems only")
-            mf = scf.RHF(mol)
-        else:
-            raise ValueError(f"Unknown method: {method}")
-
-        mf.max_cycle = int(job.get("max_scf_cycles", 200))
-        mf.conv_tol = float(job.get("scf_convergence", 1.0e-8))
-
         solvent = job.get("solvent", "")
-        if solvent:
-            mf = mf.ddCOSMO()
-            mf.with_solvent.eps = _solvent_dielectric(solvent)
+        mf = _build_mean_field(
+            mol,
+            method,
+            int(job.get("multiplicity", 1)),
+            int(job.get("max_scf_cycles", 200)),
+            float(job.get("scf_convergence", 1.0e-8)),
+            solvent,
+        )
 
         scf_iter = [0]
 
@@ -328,12 +499,14 @@ def main():
                 nz=nz,
             )
 
+        optimized_mol = None
         if job.get("optimize", False):
             _write_progress(progress_path, "optimizing", energy=result["total_energy"])
             try:
                 from pyscf.geomopt.geometric_solver import optimize as geom_optimize
 
                 mol_eq = geom_optimize(mf, maxsteps=int(job.get("max_opt_steps", 100)))
+                optimized_mol = mol_eq
                 opt_coords = mol_eq.atom_coords(unit="Bohr").tolist()
                 opt_atoms = [[int(mol_eq.atom_charge(i)), [float(v) for v in opt_coords[i]]] for i in range(mol_eq.natm)]
                 result["optimized_geometry"] = opt_atoms
@@ -342,6 +515,34 @@ def main():
                 result["error"] = "geomeTRIC not installed, optimization unavailable"
             except Exception as exc:
                 result["error"] = f"Optimization failed: {exc}"
+
+        if job.get("frequencies", False):
+            freq_mol = optimized_mol if optimized_mol is not None else mol
+            freq_mf = mf
+            if optimized_mol is not None:
+                _write_progress(progress_path, "rebuilding_scf", energy=result["total_energy"], message="SCF on optimized geometry")
+                freq_mf = _build_mean_field(
+                    freq_mol,
+                    method,
+                    int(job.get("multiplicity", 1)),
+                    int(job.get("max_scf_cycles", 200)),
+                    float(job.get("scf_convergence", 1.0e-8)),
+                    solvent,
+                )
+                freq_mf.kernel()
+                if not getattr(freq_mf, "converged", False):
+                    raise RuntimeError("SCF on optimized geometry did not converge for frequency analysis")
+
+            frequencies_cm1, ir_intensities, normal_modes = _run_frequency_analysis(
+                freq_mol,
+                freq_mf,
+                method,
+                progress_path,
+                result["total_energy"],
+            )
+            result["frequencies_cm1"] = [float(v) for v in frequencies_cm1]
+            result["ir_intensities"] = [float(v) for v in ir_intensities]
+            result["normal_modes"] = [[float(v) for v in mode] for mode in normal_modes]
 
         if result["error"]:
             result["success"] = False

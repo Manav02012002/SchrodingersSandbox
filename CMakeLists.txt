@@ -35,12 +35,21 @@ target_link_libraries(imgui PUBLIC glfw glad OpenGL::GL)
 target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_LOADER_CUSTOM)
 target_compile_options(imgui PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-include glad/gl.h>)
 
+add_library(implot STATIC
+    external/implot/implot.cpp
+    external/implot/implot_items.cpp
+    external/implot/implot_demo.cpp
+)
+target_include_directories(implot PUBLIC external/implot)
+target_link_libraries(implot PUBLIC imgui)
+
 add_library(nlohmann_json INTERFACE)
 target_include_directories(nlohmann_json INTERFACE external/nlohmann)
 
 add_executable(schrodingers_sandbox
     src/main.cpp
     src/backend/backend_manager.cpp
+    src/analysis/orbital_composition.cpp
     src/backend/python_env.cpp
     src/core/special_functions.cpp
     src/core/hydrogen.cpp
@@ -71,28 +80,38 @@ add_executable(schrodingers_sandbox
     src/renderer/shader.cpp
     src/renderer/camera.cpp
     src/renderer/basis_texture.cpp
+    src/renderer/esp_surface.cpp
     src/renderer/mol_renderer.cpp
     src/renderer/volume_texture.cpp
     src/ui/app.cpp
+    src/ui/bond_order_panel.cpp
     src/ui/ui_utils.cpp
     src/ui/panels.cpp
     src/ui/status_bar.cpp
     src/ui/energy_diagram.cpp
     src/ui/mo_diagram.cpp
+    src/ui/mo_diagram_plot.cpp
+    src/ui/orbital_composition_panel.cpp
+    src/ui/dos_panel.cpp
     src/ui/computation_panel.cpp
     src/ui/charge_overlay.cpp
     src/ui/context_menu.cpp
     src/ui/file_dialog.cpp
     src/ui/molecule_info.cpp
+    src/ui/population_panel.cpp
+    src/ui/esp_controls.cpp
+    src/ui/ir_spectrum_panel.cpp
+    src/ui/property_dashboard.cpp
     src/ui/results_panel.cpp
     src/ui/setup_wizard.cpp
+    src/ui/plot_utils.cpp
     src/ui/periodic_table.cpp
     src/ui/orbital_browser.cpp
     src/ui/properties_panel.cpp
     src/ui/editor_toolbar.cpp
 )
 target_include_directories(schrodingers_sandbox PRIVATE src)
-target_link_libraries(schrodingers_sandbox PRIVATE imgui glad glfw OpenGL::GL Eigen3::Eigen nlohmann_json nfd)
+target_link_libraries(schrodingers_sandbox PRIVATE imgui implot glad glfw OpenGL::GL Eigen3::Eigen nlohmann_json nfd)
 target_compile_options(schrodingers_sandbox PRIVATE -Wall -Wextra -Wpedantic)
 
 add_custom_command(TARGET schrodingers_sandbox POST_BUILD
@@ -309,6 +328,19 @@ target_include_directories(test_fragment_library PRIVATE src)
 target_link_libraries(test_fragment_library PRIVATE GTest::gtest_main Eigen3::Eigen)
 target_compile_options(test_fragment_library PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(test_orbital_composition
+    tests/test_orbital_composition.cpp
+    src/analysis/orbital_composition.cpp
+    src/core/basis_set.cpp
+    src/core/covalent_radii.cpp
+    src/core/elements.cpp
+    src/core/slater.cpp
+    src/core/molecular_system.cpp
+)
+target_include_directories(test_orbital_composition PRIVATE src)
+target_link_libraries(test_orbital_composition PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_orbital_composition PRIVATE -Wall -Wextra -Wpedantic)
+
 if(DEFINED ENV{SBOX_RUN_INTEGRATION_TESTS} AND "$ENV{SBOX_RUN_INTEGRATION_TESTS}" STREQUAL "1")
     add_executable(test_pyscf_integration
         tests/test_pyscf_integration.cpp
@@ -349,6 +381,7 @@ add_test(NAME test_command_stack COMMAND test_command_stack)
 add_test(NAME test_picking COMMAND test_picking)
 add_test(NAME test_valence COMMAND test_valence)
 add_test(NAME test_fragment_library COMMAND test_fragment_library)
+add_test(NAME test_orbital_composition COMMAND test_orbital_composition)
 
 if(TARGET test_pyscf_integration)
     add_test(NAME test_pyscf_integration COMMAND test_pyscf_integration)

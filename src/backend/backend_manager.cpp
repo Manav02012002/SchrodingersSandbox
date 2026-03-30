@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -381,15 +382,23 @@ void BackendManager::write_job_json(const JobSpec& spec, const std::string& work
     j["max_scf_cycles"] = spec.max_scf_cycles;
     j["scf_convergence"] = spec.scf_convergence;
     j["properties"] = json::array();
+    bool request_frequencies = false;
     for (PropertyRequest property : spec.properties) {
         j["properties"].push_back(property_to_string(property));
+        request_frequencies = request_frequencies || property == PropertyRequest::Frequencies;
     }
+    j["frequencies"] = request_frequencies;
     j["optimize"] = spec.optimize_geometry;
     j["max_opt_steps"] = spec.max_opt_steps;
     j["opt_convergence"] = spec.opt_convergence;
     j["solvent"] = spec.solvent;
     j["output_dir"] = work_dir;
     j["cube_resolution"] = 80;
+
+    if (request_frequencies && !spec.optimize_geometry) {
+        std::cerr << "Warning: frequency calculation requested without geometry optimization; "
+                     "results will use the current geometry.\n";
+    }
 
     std::ofstream out(std::filesystem::path(work_dir) / "job.json");
     if (!out) {
@@ -465,13 +474,28 @@ JobResult BackendManager::parse_result(const JobSpec& spec, const std::string& w
         }
     }
 
-    if (j.contains("frequencies") && j["frequencies"].is_array()) {
+    if (j.contains("frequencies_cm1") && j["frequencies_cm1"].is_array()) {
+        result.frequencies_cm1 = j["frequencies_cm1"].get<std::vector<double>>();
+        result.has_frequencies = !result.frequencies_cm1.empty();
+    } else if (j.contains("frequencies") && j["frequencies"].is_array()) {
         result.frequencies_cm1 = j["frequencies"].get<std::vector<double>>();
         result.has_frequencies = !result.frequencies_cm1.empty();
     }
     if (j.contains("ir_intensities") && j["ir_intensities"].is_array()) {
         result.ir_intensities = j["ir_intensities"].get<std::vector<double>>();
         result.has_frequencies = result.has_frequencies || !result.ir_intensities.empty();
+    }
+    if (j.contains("normal_modes") && j["normal_modes"].is_array()) {
+        for (const auto& mode : j["normal_modes"]) {
+            if (!mode.is_array()) {
+                continue;
+            }
+            Eigen::VectorXd vec(static_cast<int>(mode.size()));
+            for (int i = 0; i < vec.size(); ++i) {
+                vec(i) = mode[static_cast<std::size_t>(i)].get<double>();
+            }
+            result.normal_modes.push_back(vec);
+        }
     }
 
     const std::filesystem::path molden_path = std::filesystem::path(work_dir) / "result.molden";

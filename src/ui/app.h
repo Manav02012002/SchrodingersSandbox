@@ -16,6 +16,7 @@
 #include "io/xyz_io.h"
 #include "renderer/basis_texture.h"
 #include "renderer/camera.h"
+#include "renderer/esp_surface.h"
 #include "renderer/mol_renderer.h"
 #include "renderer/shader.h"
 #include "renderer/volume_texture.h"
@@ -60,6 +61,7 @@ private:
     void loadFchkFile(const std::string& path);
     void applyMOData(const sbox::basis::MOData& mo_data, const std::string& name_hint);
     void applyBackendResult(const sbox::backend::JobResult& result);
+    void loadESPSurface(const sbox::backend::JobResult& result);
     [[nodiscard]] sbox::backend::JobSpec makeJobSpecFromState() const;
     [[nodiscard]] int find_homo_index() const;
     [[nodiscard]] float compute_mol_bound_radius(const sbox::chem::MolecularSystem& mol) const;
@@ -69,6 +71,7 @@ private:
     std::unique_ptr<Shader> orbital_shader_;
     std::unique_ptr<Shader> mo_shader_;
     std::unique_ptr<Shader> cube_shader_;
+    std::unique_ptr<Shader> esp_shader_;
     Camera camera_;
     ui::AppState state_;
     ui::EditorState editor_state_;
@@ -76,6 +79,7 @@ private:
     sbox::backend::PythonEnvironment python_env_;
     ui::SetupWizardState wizard_state_;
     sbox::render::BasisTextures basis_textures_;
+    sbox::render::ESPSurface esp_surface_;
     sbox::render::MolRenderer mol_renderer_;
     sbox::render::VolumeTexture volume_texture_;
 

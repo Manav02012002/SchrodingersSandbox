@@ -81,6 +81,7 @@ ViewportPanelState draw_viewport(AppState& state, unsigned int texture_id) {
         ImGui::Checkbox("Partial Charges", &state.show_charges);
         ImGui::Checkbox("Bond Orders", &state.show_bond_orders);
         ImGui::Checkbox("Dipole Moment", &state.show_dipole);
+        ImGui::Checkbox("ESP Surface", &state.show_esp_surface);
         ImGui::Separator();
 
         viewport.size = ImGui::GetContentRegionAvail();

@@ -15,6 +15,17 @@ enum class ViewMode : int {
     MolecularOrbital = 1,
 };
 
+enum class PropertyView : int {
+    Dashboard = 0,
+    Population,
+    BondOrders,
+    MoDiagram,
+    DOS,
+    OrbitalComposition,
+    IRSpectrum,
+    ESPControls,
+};
+
 struct AppState {
     struct ComputationState {
         sbox::backend::Method method = sbox::backend::Method::HF;
@@ -43,12 +54,20 @@ struct AppState {
     bool show_charges = false;
     bool show_bond_orders = false;
     bool show_dipole = false;
+    bool show_esp_surface = false;
+    float esp_density_iso = 0.005f;
+    float esp_color_min = -0.05f;
+    float esp_color_max = 0.05f;
+    bool esp_auto_range = true;
 
     int render_mode = 0;  // 0=volume, 1=isosurface, 2=phase isosurface
     float iso_value = 0.01f;
     float gamma = 0.4f;
     ViewMode view_mode = ViewMode::AtomicOrbital;
+    PropertyView property_view = PropertyView::Dashboard;
     int selected_mo = -1;
+    int selected_vibrational_mode = -1;
+    bool animate_vibrational_mode = false;
     int num_mo = 0;
     int homo_index = -1;
     float mol_bound_radius = 10.0f;

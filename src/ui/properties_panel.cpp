@@ -14,7 +14,7 @@
 namespace sbox::ui {
 
 void draw_properties(AppState& state) {
-    if (!ImGui::Begin("Properties")) {
+    if (!ImGui::Begin("Atomic Properties")) {
         ImGui::End();
         return;
     }

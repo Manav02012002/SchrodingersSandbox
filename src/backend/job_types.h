@@ -224,6 +224,7 @@ struct JobResult {
 
     std::vector<double> frequencies_cm1;
     std::vector<double> ir_intensities;
+    std::vector<Eigen::VectorXd> normal_modes;
     bool has_frequencies = false;
 
     std::vector<SCFIteration> scf_history;

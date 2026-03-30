@@ -1,5 +1,0 @@
-if(EXISTS "/Users/manavmadanrawal/Dev/schrodingerssandbox/build/test_constants[1]_tests.cmake")
-  include("/Users/manavmadanrawal/Dev/schrodingerssandbox/build/test_constants[1]_tests.cmake")
-else()
-  add_test(test_constants_NOT_BUILT test_constants_NOT_BUILT)
-endif()

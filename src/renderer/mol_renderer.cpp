@@ -1,6 +1,7 @@
 #include "renderer/mol_renderer.h"
 
 #include "core/elements.h"
+#include "core/paths.h"
 
 #include <glad/gl.h>
 
@@ -114,6 +115,8 @@ float vdw_radius(int Z) {
 
 constexpr float kBondRadiusBallAndStick = 0.15f;
 constexpr float kBondRadiusStickOnly = 0.08f;
+float g_atom_radius_scale = 1.0f;
+float g_bond_radius_scale = 1.0f;
 
 Eigen::Vector3f lerp(const Eigen::Vector3f& a, const Eigen::Vector3f& b, float t) {
     return a + (b - a) * t;
@@ -235,9 +238,19 @@ Eigen::Vector3f bfactor_color(float b_factor, float b_min, float b_max) {
     return lerp(Eigen::Vector3f(1.0f, 1.0f, 1.0f), Eigen::Vector3f(0.8f, 0.0f, 0.0f), (t - 0.5f) * 2.0f);
 }
 
+void set_atom_radius_scale(float scale) {
+    g_atom_radius_scale = std::max(0.05f, scale);
+}
+
+void set_bond_radius_scale(float scale) {
+    g_bond_radius_scale = std::max(0.05f, scale);
+}
+
 MolRenderer::MolRenderer() {
-    atom_shader_ = std::make_unique<sbox::Shader>("data/shaders/atom_impostor.vert", "data/shaders/atom_impostor.frag");
-    bond_shader_ = std::make_unique<sbox::Shader>("data/shaders/bond_impostor.vert", "data/shaders/bond_impostor.frag");
+    atom_shader_ = std::make_unique<sbox::Shader>(sbox::get_shader_path("atom_impostor.vert"),
+                                                  sbox::get_shader_path("atom_impostor.frag"));
+    bond_shader_ = std::make_unique<sbox::Shader>(sbox::get_shader_path("bond_impostor.vert"),
+                                                  sbox::get_shader_path("bond_impostor.frag"));
 
     constexpr std::array<float, 12> quad_vertices = {
         -1.0f, -1.0f,
@@ -386,7 +399,7 @@ void MolRenderer::upload(const sbox::chem::MolecularSystem& mol,
         atom_instances_.push_back(static_cast<float>(atom.position.x()));
         atom_instances_.push_back(static_cast<float>(atom.position.y()));
         atom_instances_.push_back(static_cast<float>(atom.position.z()));
-        atom_instances_.push_back(atom_render_radius(atom.Z));
+        atom_instances_.push_back(atom_render_radius(atom.Z) * g_atom_radius_scale);
         atom_instances_.push_back(color.x());
         atom_instances_.push_back(color.y());
         atom_instances_.push_back(color.z());
@@ -416,7 +429,7 @@ void MolRenderer::upload(const sbox::chem::MolecularSystem& mol,
         bond_instances_.push_back(color_b.x());
         bond_instances_.push_back(color_b.y());
         bond_instances_.push_back(color_b.z());
-        bond_instances_.push_back(kBondRadiusBallAndStick);
+        bond_instances_.push_back(kBondRadiusBallAndStick * g_bond_radius_scale);
     }
 
     upload_atom_instances(atom_instance_vbo_, atom_instances_);
@@ -441,7 +454,7 @@ void MolRenderer::render(const Eigen::Matrix4f& view_matrix,
         if (mode == MolRenderMode::SpaceFilling) {
             for (int i = 0; i < atom_count_; ++i) {
                 const std::size_t base = static_cast<std::size_t>(i) * 8;
-                atom_draw_data[base + 3] = vdw_radius(static_cast<int>(atom_draw_data[base + 7]));
+                atom_draw_data[base + 3] = vdw_radius(static_cast<int>(atom_draw_data[base + 7])) * g_atom_radius_scale;
             }
         }
 
@@ -459,7 +472,7 @@ void MolRenderer::render(const Eigen::Matrix4f& view_matrix,
 
     if (render_bonds && bond_count_ > 0) {
         std::vector<float> bond_draw_data = bond_instances_;
-        const float bond_radius = (mode == MolRenderMode::StickOnly) ? kBondRadiusStickOnly : kBondRadiusBallAndStick;
+        const float bond_radius = ((mode == MolRenderMode::StickOnly) ? kBondRadiusStickOnly : kBondRadiusBallAndStick) * g_bond_radius_scale;
         for (int i = 0; i < bond_count_; ++i) {
             bond_draw_data[static_cast<std::size_t>(i) * 13 + 12] = bond_radius;
         }
@@ -563,7 +576,7 @@ void MolRenderer::render_selection(const Eigen::Matrix4f& view_matrix,
         atom_data.push_back(static_cast<float>(atom.position.x()));
         atom_data.push_back(static_cast<float>(atom.position.y()));
         atom_data.push_back(static_cast<float>(atom.position.z()));
-        atom_data.push_back(mode == MolRenderMode::SpaceFilling ? vdw_radius(atom.Z) : atom_render_radius(atom.Z));
+        atom_data.push_back((mode == MolRenderMode::SpaceFilling ? vdw_radius(atom.Z) : atom_render_radius(atom.Z)) * g_atom_radius_scale);
         atom_data.push_back(0.15f);
         atom_data.push_back(0.55f);
         atom_data.push_back(0.65f);
@@ -602,7 +615,8 @@ void MolRenderer::render_atom_labels(const sbox::chem::MolecularSystem& mol,
                                      const ImVec2& viewport_pos,
                                      const ImVec2& viewport_size,
                                      bool show_indices,
-                                     bool show_symbols) {
+                                     bool show_symbols,
+                                     bool show_hydrogens) {
     if (!show_symbols && !show_indices) {
         return;
     }
@@ -610,7 +624,7 @@ void MolRenderer::render_atom_labels(const sbox::chem::MolecularSystem& mol,
     ImDrawList* draw_list = ImGui::GetForegroundDrawList();
     for (int i = 0; i < mol.num_atoms(); ++i) {
         const sbox::chem::Atom& atom = mol.atom(i);
-        if (atom.Z == 1) {
+        if (atom.Z == 1 && !show_hydrogens) {
             continue;
         }
         bool visible = false;

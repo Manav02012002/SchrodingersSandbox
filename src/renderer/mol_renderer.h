@@ -34,6 +34,8 @@ enum class ColorMode : int {
 Eigen::Vector3f chain_color(int chain_index);
 Eigen::Vector3f residue_color(const std::string& residue_name);
 Eigen::Vector3f bfactor_color(float b_factor, float b_min, float b_max);
+void set_atom_radius_scale(float scale);
+void set_bond_radius_scale(float scale);
 
 class MolRenderer {
 public:
@@ -63,7 +65,8 @@ public:
                             const ImVec2& viewport_pos,
                             const ImVec2& viewport_size,
                             bool show_indices = false,
-                            bool show_symbols = true);
+                            bool show_symbols = true,
+                            bool show_hydrogens = false);
 
     bool has_data() const;
     int num_atoms() const;

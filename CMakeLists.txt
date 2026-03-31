@@ -6,6 +6,43 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(SBOX_ENABLE_ASAN "Enable AddressSanitizer" OFF)
+option(SBOX_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
+
+execute_process(
+    COMMAND git describe --tags --always --dirty
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_VERSION
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT GIT_VERSION)
+    set(GIT_VERSION "0.1.0-dev")
+endif()
+
+message(STATUS "Version: ${GIT_VERSION}")
+
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/generated)
+configure_file(
+    ${CMAKE_SOURCE_DIR}/src/core/version.h.in
+    ${CMAKE_BINARY_DIR}/generated/version.h
+    @ONLY
+)
+
+if(SBOX_ENABLE_ASAN)
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address)
+endif()
+
+if(SBOX_ENABLE_UBSAN)
+    add_compile_options(-fsanitize=undefined)
+    add_link_options(-fsanitize=undefined)
+endif()
+
+if(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+    add_compile_options(-g -O2)
+endif()
+
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -47,16 +84,22 @@ add_library(nlohmann_json INTERFACE)
 target_include_directories(nlohmann_json INTERFACE external/nlohmann)
 
 add_executable(schrodingers_sandbox
+    src/cli.cpp
     src/main.cpp
     src/backend/backend_manager.cpp
     src/analysis/crystal_field.cpp
     src/analysis/orbital_composition.cpp
     src/backend/python_env.cpp
     src/chem/ligand_library.cpp
+    src/core/crash_handler.cpp
     src/core/special_functions.cpp
     src/core/hydrogen.cpp
+    src/core/logging.cpp
     src/core/slater.cpp
     src/core/spline.cpp
+    src/core/paths.cpp
+    src/core/settings.cpp
+    src/core/update_checker.cpp
     src/chem/coordination.cpp
     src/core/elements.cpp
     src/core/gaussian_eval.cpp
@@ -89,8 +132,10 @@ add_executable(schrodingers_sandbox
     src/renderer/esp_surface.cpp
     src/renderer/lod_renderer.cpp
     src/renderer/mol_renderer.cpp
+    src/renderer/screenshot.cpp
     src/renderer/volume_texture.cpp
     src/ui/app.cpp
+    src/ui/about_dialog.cpp
     src/ui/bond_order_panel.cpp
     src/ui/ui_utils.cpp
     src/ui/panels.cpp
@@ -117,6 +162,7 @@ add_executable(schrodingers_sandbox
     src/ui/property_dashboard.cpp
     src/ui/reaction_path_panel.cpp
     src/ui/results_panel.cpp
+    src/ui/settings_panel.cpp
     src/ui/setup_wizard.cpp
     src/ui/solvent_panel.cpp
     src/ui/spectrochemical_panel.cpp
@@ -126,9 +172,32 @@ add_executable(schrodingers_sandbox
     src/ui/properties_panel.cpp
     src/ui/editor_toolbar.cpp
 )
-target_include_directories(schrodingers_sandbox PRIVATE src)
+target_include_directories(schrodingers_sandbox PRIVATE src ${CMAKE_BINARY_DIR}/generated external/stb)
 target_link_libraries(schrodingers_sandbox PRIVATE imgui implot glad glfw OpenGL::GL Eigen3::Eigen nlohmann_json nfd)
 target_compile_options(schrodingers_sandbox PRIVATE -Wall -Wextra -Wpedantic)
+
+if(UNIX AND NOT APPLE)
+    target_link_options(schrodingers_sandbox PRIVATE -rdynamic)
+endif()
+
+if(APPLE)
+    set(MACOSX_BUNDLE_ICON_FILE AppIcon)
+    set(APP_ICON_MACOSX ${CMAKE_SOURCE_DIR}/resources/AppIcon.icns)
+    if(EXISTS ${APP_ICON_MACOSX})
+        set_source_files_properties(${APP_ICON_MACOSX} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+        target_sources(schrodingers_sandbox PRIVATE ${APP_ICON_MACOSX})
+    endif()
+
+    set_target_properties(schrodingers_sandbox PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "Schrödinger's Sandbox"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${GIT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${GIT_VERSION}"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.schrodingerssandbox.app"
+        MACOSX_BUNDLE_ICON_FILE "AppIcon"
+        MACOSX_BUNDLE_COPYRIGHT "Copyright 2025 Manav Rawal"
+    )
+endif()
 
 add_custom_command(TARGET schrodingers_sandbox POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/data/shaders
@@ -138,6 +207,31 @@ add_custom_command(TARGET schrodingers_sandbox POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/data/scripts/pes_scan_driver.py ${CMAKE_BINARY_DIR}/data/scripts/pes_scan_driver.py
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/data/scripts/pyscf_driver.py ${CMAKE_BINARY_DIR}/data/scripts/pyscf_driver.py
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/data/scripts/xtb_driver.py ${CMAKE_BINARY_DIR}/data/scripts/xtb_driver.py
+)
+
+if(APPLE)
+    add_custom_command(TARGET schrodingers_sandbox POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:schrodingers_sandbox>/Contents/Resources/data"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/data/shaders "$<TARGET_BUNDLE_DIR:schrodingers_sandbox>/Contents/Resources/data/shaders"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/data/scripts "$<TARGET_BUNDLE_DIR:schrodingers_sandbox>/Contents/Resources/data/scripts"
+    )
+endif()
+
+install(TARGETS schrodingers_sandbox
+    RUNTIME DESTINATION bin
+    BUNDLE DESTINATION .
+)
+
+install(DIRECTORY data/shaders DESTINATION share/schrodingers_sandbox/data)
+install(DIRECTORY data/scripts DESTINATION share/schrodingers_sandbox/data)
+
+install(FILES external/glfw/LICENSE.md
+    DESTINATION share/schrodingers_sandbox/licenses
+    RENAME glfw-LICENSE.md
+)
+install(FILES external/imgui/LICENSE.txt
+    DESTINATION share/schrodingers_sandbox/licenses
+    RENAME imgui-LICENSE.txt
 )
 
 enable_testing()
@@ -424,6 +518,32 @@ target_include_directories(test_spline PRIVATE src)
 target_link_libraries(test_spline PRIVATE GTest::gtest_main Eigen3::Eigen)
 target_compile_options(test_spline PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(test_settings
+    tests/test_settings.cpp
+    src/core/logging.cpp
+    src/core/settings.cpp
+)
+target_include_directories(test_settings PRIVATE src)
+target_link_libraries(test_settings PRIVATE GTest::gtest_main Eigen3::Eigen nlohmann_json)
+target_compile_options(test_settings PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_cli
+    tests/test_cli.cpp
+    src/cli.cpp
+)
+target_include_directories(test_cli PRIVATE src ${CMAKE_BINARY_DIR}/generated)
+target_link_libraries(test_cli PRIVATE GTest::gtest_main Eigen3::Eigen)
+target_compile_options(test_cli PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_update_checker
+    tests/test_update_checker.cpp
+    src/core/update_checker.cpp
+    src/backend/python_env.cpp
+)
+target_include_directories(test_update_checker PRIVATE src ${CMAKE_BINARY_DIR}/generated)
+target_link_libraries(test_update_checker PRIVATE GTest::gtest_main Eigen3::Eigen nlohmann_json)
+target_compile_options(test_update_checker PRIVATE -Wall -Wextra -Wpedantic)
+
 if(DEFINED ENV{SBOX_RUN_INTEGRATION_TESTS} AND "$ENV{SBOX_RUN_INTEGRATION_TESTS}" STREQUAL "1")
     add_executable(test_pyscf_integration
         tests/test_pyscf_integration.cpp
@@ -486,6 +606,9 @@ add_test(NAME test_coordination COMMAND test_coordination)
 add_test(NAME test_ligand_library COMMAND test_ligand_library)
 add_test(NAME test_crystal_field COMMAND test_crystal_field)
 add_test(NAME test_spline COMMAND test_spline)
+add_test(NAME test_settings COMMAND test_settings)
+add_test(NAME test_cli COMMAND test_cli)
+add_test(NAME test_update_checker COMMAND test_update_checker)
 
 if(TARGET test_pyscf_integration)
     add_test(NAME test_pyscf_integration COMMAND test_pyscf_integration)
@@ -494,3 +617,41 @@ endif()
 if(TARGET test_pes_integration)
     add_test(NAME test_pes_integration COMMAND test_pes_integration)
 endif()
+
+set(SBOX_LICENSE_FILE "${CMAKE_SOURCE_DIR}/README.md")
+if(EXISTS "${CMAKE_SOURCE_DIR}/LICENSE")
+    set(SBOX_LICENSE_FILE "${CMAKE_SOURCE_DIR}/LICENSE")
+endif()
+
+if(APPLE)
+    file(WRITE "${CMAKE_BINARY_DIR}/Info.plist" "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>CFBundleDisplayName</key>\n    <string>Schrödinger's Sandbox</string>\n    <key>CFBundleExecutable</key>\n    <string>schrodingers_sandbox</string>\n    <key>CFBundleIdentifier</key>\n    <string>com.schrodingerssandbox.app</string>\n    <key>CFBundleName</key>\n    <string>Schrödinger's Sandbox</string>\n    <key>CFBundlePackageType</key>\n    <string>APPL</string>\n    <key>CFBundleShortVersionString</key>\n    <string>${GIT_VERSION}</string>\n    <key>CFBundleVersion</key>\n    <string>${GIT_VERSION}</string>\n</dict>\n</plist>\n")
+endif()
+
+set(CPACK_PACKAGE_NAME "SchrodingersSandbox")
+set(CPACK_PACKAGE_VERSION "${GIT_VERSION}")
+set(CPACK_PACKAGE_VENDOR "Manav Rawal")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Interactive quantum chemistry visualisation")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/your-username/schrodingerssandbox")
+set(CPACK_RESOURCE_FILE_LICENSE "${SBOX_LICENSE_FILE}")
+
+if(APPLE)
+    set(CPACK_GENERATOR "DragNDrop")
+    set(CPACK_DMG_VOLUME_NAME "Schrödinger's Sandbox")
+    set(CPACK_BUNDLE_NAME "Schrödinger's Sandbox")
+    set(CPACK_BUNDLE_PLIST "${CMAKE_BINARY_DIR}/Info.plist")
+elseif(WIN32)
+    set(CPACK_GENERATOR "NSIS")
+    set(CPACK_NSIS_DISPLAY_NAME "Schrödinger's Sandbox")
+    set(CPACK_NSIS_INSTALL_ROOT "$PROGRAMFILES64")
+    set(CPACK_NSIS_MENU_LINKS "bin/schrodingers_sandbox.exe" "Schrödinger's Sandbox")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/resources/icon.ico")
+        set(CPACK_NSIS_MUI_ICON "${CMAKE_SOURCE_DIR}/resources/icon.ico")
+    endif()
+else()
+    set(CPACK_GENERATOR "TGZ;DEB")
+    set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Manav Rawal")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libeigen3-dev, libgl-dev")
+    set(CPACK_DEBIAN_PACKAGE_SECTION "science")
+endif()
+
+include(CPack)

@@ -1,11 +1,11 @@
 #include "renderer/window.h"
+#include "core/logging.h"
 
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 
 #include <stdexcept>
 #include <string>
-#include <iostream>
 #include <unordered_map>
 
 namespace sbox {
@@ -74,7 +74,7 @@ void Window::swapBuffers() const {
 }
 
 void Window::ErrorCallback(int error, const char* description) {
-    std::cerr << "GLFW error [" << error << "]: " << (description != nullptr ? description : "unknown") << '\n';
+    SBOX_LOG_ERROR("GLFW error [%d]: %s", error, description != nullptr ? description : "unknown");
 }
 
 void Window::FramebufferSizeCallback(GLFWwindow* window, int width, int height) {

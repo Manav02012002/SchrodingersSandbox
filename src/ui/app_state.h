@@ -170,6 +170,7 @@ struct AppState {
     bool show_esp_surface = false;
     bool show_complex_builder = false;
     bool show_spectrochemical = false;
+    bool show_settings = false;
     int color_mode = 0;
     float esp_density_iso = 0.005f;
     float esp_color_min = -0.05f;

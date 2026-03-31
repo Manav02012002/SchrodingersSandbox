@@ -4,7 +4,9 @@
 #include "backend/python_env.h"
 #include "chem/ligand_library.h"
 #include "core/basis_set.h"
+#include "core/update_checker.h"
 #include "core/molecular_system.h"
+#include "core/settings.h"
 #include "editor/draw_mode.h"
 #include "editor/erase_mode.h"
 #include "editor/fragment_mode.h"
@@ -22,10 +24,12 @@
 #include "renderer/esp_surface.h"
 #include "renderer/lod_renderer.h"
 #include "renderer/mol_renderer.h"
+#include "renderer/screenshot.h"
 #include "renderer/shader.h"
 #include "renderer/volume_texture.h"
 #include "renderer/window.h"
 #include "ui/app_state.h"
+#include "ui/about_dialog.h"
 #include "ui/context_menu.h"
 #include "ui/editor_toolbar.h"
 #include "ui/results_panel.h"
@@ -48,6 +52,11 @@ public:
     App& operator=(const App&) = delete;
 
     void run();
+    void load_file_by_extension(const std::string& path);
+    void render_single_frame();
+    void render_to_fbo(unsigned int fbo, int w, int h);
+    ui::AppState& state();
+    const ui::AppState& state() const;
 
 private:
     static void ScrollCallback(GLFWwindow* window, double xoffset, double yoffset);
@@ -56,6 +65,7 @@ private:
     void shutdownImGui();
     void ensureViewportTarget(int width, int height);
     void renderViewportToTexture();
+    void renderViewportToTarget(unsigned int fbo, int width, int height, bool transparent_background = false);
     void updateMaxDensityEstimate();
     [[nodiscard]] float computeMaxDensityEstimate() const;
     void loadMoldenFile(const std::string& path);
@@ -65,7 +75,9 @@ private:
     void loadSDFFile(const std::string& path);
     void loadPDBFile(const std::string& path);
     void loadFchkFile(const std::string& path);
+    void loadProjectFile(const std::string& path);
     void uploadCurrentMoleculeToRenderers();
+    void apply_settings();
     void applyMOData(const sbox::basis::MOData& mo_data, const std::string& name_hint);
     void applyBackendResult(const sbox::backend::JobResult& result);
     void loadESPSurface(const sbox::backend::JobResult& result);
@@ -84,6 +96,8 @@ private:
     Camera camera_;
     ui::AppState state_;
     ui::EditorState editor_state_;
+    sbox::SettingsManager settings_manager_;
+    std::unique_ptr<sbox::UpdateChecker> update_checker_;
     sbox::backend::BackendManager backend_;
     sbox::backend::PythonEnvironment python_env_;
     ui::SetupWizardState wizard_state_;
@@ -122,6 +136,12 @@ private:
     std::string message_popup_text_;
     bool open_metal_picker_popup_ = false;
     std::vector<int> detected_metal_choices_;
+    bool show_about_ = false;
+    bool show_shortcuts_ = false;
+    bool show_update_dialog_ = false;
+    bool update_notification_shown_ = false;
+    int update_poll_frame_counter_ = 0;
+    std::optional<sbox::UpdateInfo> pending_update_;
 
     int density_n_ = -1;
     int density_l_ = -1;

@@ -1,6 +1,7 @@
 #include "renderer/lod_renderer.h"
 
 #include "core/elements.h"
+#include "core/paths.h"
 
 #include <glad/gl.h>
 
@@ -195,7 +196,8 @@ int64_t SpatialHash::hash_position(float x, float y, float z) const {
 }
 
 LODRenderer::LODRenderer() {
-    point_shader_ = std::make_unique<sbox::Shader>("data/shaders/atom_point.vert", "data/shaders/atom_point.frag");
+    point_shader_ = std::make_unique<sbox::Shader>(sbox::get_shader_path("atom_point.vert"),
+                                                   sbox::get_shader_path("atom_point.frag"));
 
     glGenVertexArrays(1, &point_vao_);
     glGenBuffers(1, &point_vbo_);

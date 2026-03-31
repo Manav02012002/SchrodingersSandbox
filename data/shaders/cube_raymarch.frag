@@ -11,6 +11,8 @@ uniform float u_iso_value;
 uniform float u_gamma;
 uniform float u_max_density;
 uniform float u_bound_radius;
+uniform int u_volume_steps;
+uniform int u_isosurface_steps;
 
 uniform sampler3D u_volume;
 uniform vec3 u_grid_origin;
@@ -64,7 +66,7 @@ vec3 isosurface_shading(vec3 base_color, vec3 p, vec3 view_dir) {
 }
 
 bool find_isosurface(vec3 ro, vec3 rd, float t_start, float t_end, out vec3 hit_point) {
-    const int steps = 192;
+    int steps = clamp(u_isosurface_steps, 1, 512);
     float step_size = (t_end - t_start) / float(steps);
     float t_prev = t_start;
     float prev_psi = sample_volume(ro + rd * t_prev);
@@ -135,12 +137,15 @@ void main() {
     }
 
     if (u_render_mode == 0) {
-        const int NUM_STEPS = 128;
-        float step_size = (t_far - t_near) / float(NUM_STEPS);
+        int num_steps = clamp(u_volume_steps, 1, 512);
+        float step_size = (t_far - t_near) / float(num_steps);
         vec3 accum_color = vec3(0.0);
         float accum_alpha = 0.0;
 
-        for (int i = 0; i < NUM_STEPS; ++i) {
+        for (int i = 0; i < 512; ++i) {
+            if (i >= num_steps) {
+                break;
+            }
             float t = t_near + (float(i) + 0.5) * step_size;
             vec3 pos = ray_origin + t * ray_dir;
             float val = sample_volume(pos);
@@ -149,7 +154,7 @@ void main() {
             float mapped = pow(normalized, u_gamma);
 
             vec3 col = density_ramp(mapped);
-            float sample_alpha = mapped * (3.0 / float(NUM_STEPS));
+            float sample_alpha = mapped * (3.0 / float(num_steps));
             accum_color += (1.0 - accum_alpha) * col * sample_alpha;
             accum_alpha += (1.0 - accum_alpha) * sample_alpha;
 

@@ -1,9 +1,15 @@
 #include "ui/app.h"
 
+#include "core/logging.h"
+#include "core/settings.h"
+#include "core/update_checker.h"
+#include "ui/about_dialog.h"
 #include "ui/bond_order_panel.h"
 #include "core/gaussian_eval.h"
 #include "core/hydrogen.h"
 #include "core/molden_parser.h"
+#include "core/paths.h"
+#include "io/project_io.h"
 #include "ui/charge_overlay.h"
 #include "ui/complex_builder.h"
 #include "ui/computation_panel.h"
@@ -26,6 +32,7 @@
 #include "ui/plot_utils.h"
 #include "ui/population_panel.h"
 #include "ui/property_dashboard.h"
+#include "ui/settings_panel.h"
 #include "ui/results_panel.h"
 #include "ui/setup_wizard.h"
 #include "ui/solvent_panel.h"
@@ -41,9 +48,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
+#include <ctime>
+#include <cstdlib>
 #include <filesystem>
-#include <iostream>
 #include <optional>
 #include <stdexcept>
 #include <vector>
@@ -62,13 +71,13 @@ std::unique_ptr<Shader> try_load_shader(const std::string& vertex,
         if (info_log_len > 1) {
             std::vector<char> info_log(static_cast<std::size_t>(info_log_len));
             glGetProgramInfoLog(shader->id(), info_log_len, nullptr, info_log.data());
-            std::cerr << label << " shader compile/link log: " << info_log.data() << '\n';
+            SBOX_LOG_DEBUG("%s shader compile/link log: %s", label, info_log.data());
         } else {
-            std::cerr << label << " shader compile/link log: <empty>\n";
+            SBOX_LOG_DEBUG("%s shader compile/link log: <empty>", label);
         }
         return shader;
     } catch (const std::exception& ex) {
-        std::cerr << label << " shader unavailable: " << ex.what() << '\n';
+        SBOX_LOG_WARN("%s shader unavailable: %s", label, ex.what());
         return nullptr;
     }
 }
@@ -101,6 +110,95 @@ int first_transition_metal_index(const sbox::chem::MolecularSystem& mol) {
         }
     }
     return -1;
+}
+
+void open_in_system_viewer(const std::string& path) {
+#ifdef __APPLE__
+    const std::string command = "open \"" + path + "\"";
+    std::system(command.c_str());
+#elif defined(__linux__)
+    const std::string command = "xdg-open \"" + path + "\"";
+    std::system(command.c_str());
+#elif defined(_WIN32)
+    const std::string command = "start \"\" \"" + path + "\"";
+    std::system(command.c_str());
+#endif
+}
+
+void open_url_in_system_browser(const std::string& url) {
+#ifdef __APPLE__
+    const std::string command = "open \"" + url + "\"";
+    std::system(command.c_str());
+#elif defined(__linux__)
+    const std::string command = "xdg-open \"" + url + "\"";
+    std::system(command.c_str());
+#elif defined(_WIN32)
+    const std::string command = "start \"\" \"" + url + "\"";
+    std::system(command.c_str());
+#endif
+}
+
+void draw_update_dialog(bool& show, const sbox::UpdateInfo& info, sbox::SettingsManager& settings_manager) {
+    if (show) {
+        ImGui::OpenPopup("Update Available");
+    }
+    bool open = show;
+    if (ImGui::BeginPopupModal("Update Available", &open, ImGuiWindowFlags_AlwaysAutoResize)) {
+        show = open;
+        ImGui::TextUnformatted("A new version of Schrödinger's Sandbox is available!");
+        ImGui::Spacing();
+        ImGui::Text("Current version: %s", info.current_version.c_str());
+        ImGui::Text("Latest version: %s", info.latest_version.c_str());
+        ImGui::Text("Released: %s", info.published_date.c_str());
+        ImGui::Spacing();
+        ImGui::TextUnformatted("What's new:");
+        ImGui::TextWrapped("%s", info.changelog.empty() ? "No release notes provided." : info.changelog.c_str());
+        ImGui::Spacing();
+        if (ImGui::Button("Download")) {
+            open_url_in_system_browser(!info.download_url.empty() ? info.download_url : info.release_url);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("View Release")) {
+            open_url_in_system_browser(info.release_url);
+        }
+        if (ImGui::Button("Remind Me Later")) {
+            show = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Skip This Version")) {
+            settings_manager.settings().skipped_update_version = info.latest_version;
+            settings_manager.save();
+            show = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    } else {
+        show = false;
+    }
+}
+
+std::string default_screenshot_path() {
+    const char* home = std::getenv("HOME");
+    std::filesystem::path base = home != nullptr ? std::filesystem::path(home) : std::filesystem::current_path();
+    const std::filesystem::path desktop = base / "Desktop";
+    const std::filesystem::path pictures = base / "Pictures";
+    if (std::filesystem::exists(desktop)) {
+        base = desktop;
+    } else if (std::filesystem::exists(pictures)) {
+        base = pictures;
+    }
+
+    std::time_t now = std::time(nullptr);
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &now);
+#else
+    localtime_r(&now, &tm);
+#endif
+    char buffer[64];
+    std::strftime(buffer, sizeof(buffer), "SchrodingersSandbox_%Y%m%d_%H%M%S.png", &tm);
+    return (base / buffer).string();
 }
 
 void draw_color_legend(const ui::AppState& state,
@@ -282,12 +380,28 @@ std::optional<sbox::basis::MOData> mo_data_from_fchk(const sbox::io::FchkData& f
 }  // namespace
 
 App::App() {
-    window_ = std::make_unique<Window>(1600, 1000, "Schrödinger's Sandbox");
-    gradient_shader_ = std::make_unique<Shader>("data/shaders/fullscreen_quad.vert", "data/shaders/test_gradient.frag");
-    orbital_shader_ = try_load_shader("data/shaders/orbital_raymarch.vert", "data/shaders/orbital_raymarch.frag", "Orbital");
-    mo_shader_ = try_load_shader("data/shaders/mo_raymarch.vert", "data/shaders/mo_raymarch.frag", "MO");
-    cube_shader_ = try_load_shader("data/shaders/cube_raymarch.vert", "data/shaders/cube_raymarch.frag", "Cube");
-    esp_shader_ = try_load_shader("data/shaders/mo_raymarch.vert", "data/shaders/esp_surface.frag", "ESP Surface");
+    settings_manager_.load();
+    const auto& settings = settings_manager_.settings();
+
+    window_ = std::make_unique<Window>(settings.window_width, settings.window_height, "Schrödinger's Sandbox");
+    if (settings.window_maximized) {
+        glfwMaximizeWindow(window_->handle());
+    }
+    glfwSwapInterval(settings.enable_vsync ? 1 : 0);
+    gradient_shader_ = std::make_unique<Shader>(sbox::get_shader_path("fullscreen_quad.vert"),
+                                                sbox::get_shader_path("test_gradient.frag"));
+    orbital_shader_ = try_load_shader(sbox::get_shader_path("orbital_raymarch.vert"),
+                                      sbox::get_shader_path("orbital_raymarch.frag"),
+                                      "Orbital");
+    mo_shader_ = try_load_shader(sbox::get_shader_path("mo_raymarch.vert"),
+                                 sbox::get_shader_path("mo_raymarch.frag"),
+                                 "MO");
+    cube_shader_ = try_load_shader(sbox::get_shader_path("cube_raymarch.vert"),
+                                   sbox::get_shader_path("cube_raymarch.frag"),
+                                   "Cube");
+    esp_shader_ = try_load_shader(sbox::get_shader_path("mo_raymarch.vert"),
+                                  sbox::get_shader_path("esp_surface.frag"),
+                                  "ESP Surface");
 
     glGenVertexArrays(1, &fullscreen_vao_);
 
@@ -308,11 +422,54 @@ App::App() {
     editor_state_.fragment_mode = std::make_unique<sbox::editor::FragmentMode>(&editor_state_.fragment_library);
     editor_state_.select_mode->set_context_menu_state(&editor_state_.context_menu);
 
+    state_.iso_value = settings.default_iso_value;
+    state_.gamma = settings.default_gamma;
+    state_.mol_render_mode = settings.mol_render_mode;
+    state_.color_mode = settings.color_mode;
+    state_.computation.method = static_cast<sbox::backend::Method>(std::clamp(settings.default_method, 0, static_cast<int>(sbox::backend::Method::GFN_FF)));
+    state_.computation.basis = static_cast<sbox::backend::BasisSetType>(std::clamp(settings.default_basis, 0, static_cast<int>(sbox::backend::BasisSetType::aug_cc_pVTZ)));
+    state_.computation.charge = settings.default_charge;
+    state_.computation.multiplicity = settings.default_multiplicity;
+    sbox::render::set_atom_radius_scale(settings.atom_scale);
+    sbox::render::set_bond_radius_scale(settings.bond_scale);
+    if (!settings.python_path.empty()) {
+        python_env_.set_python_path(settings.python_path);
+        python_env_.detect();
+        python_env_.check_packages();
+        backend_.init(python_env_);
+    }
+
+    ui::set_about_dialog_context(&python_env_);
+    if (settings.check_for_updates) {
+        update_checker_ = std::make_unique<sbox::UpdateChecker>("Manav02012002/SchrodingersSandbox");
+        update_checker_->check_async();
+    }
+
     initImGui();
     ensureViewportTarget(viewport_width_, viewport_height_);
 }
 
 App::~App() {
+    if (window_ != nullptr) {
+        int win_w = settings_manager_.settings().window_width;
+        int win_h = settings_manager_.settings().window_height;
+        glfwGetWindowSize(window_->handle(), &win_w, &win_h);
+        settings_manager_.settings().window_width = win_w;
+        settings_manager_.settings().window_height = win_h;
+        settings_manager_.settings().window_maximized =
+            glfwGetWindowAttrib(window_->handle(), GLFW_MAXIMIZED) == GLFW_TRUE;
+        settings_manager_.settings().python_path = python_env_.info().python_path;
+        settings_manager_.settings().default_method = static_cast<int>(state_.computation.method);
+        settings_manager_.settings().default_basis = static_cast<int>(state_.computation.basis);
+        settings_manager_.settings().default_charge = state_.computation.charge;
+        settings_manager_.settings().default_multiplicity = state_.computation.multiplicity;
+        settings_manager_.settings().default_iso_value = state_.iso_value;
+        settings_manager_.settings().default_gamma = state_.gamma;
+        settings_manager_.settings().mol_render_mode = state_.mol_render_mode;
+        settings_manager_.settings().color_mode = state_.color_mode;
+    }
+    settings_manager_.save();
+
     shutdownImGui();
 
     if (fullscreen_vao_ != 0U) {
@@ -341,6 +498,17 @@ void App::run() {
 
     while (!window_->shouldClose()) {
         window_->pollEvents();
+        ++update_poll_frame_counter_;
+        if (update_checker_ && update_poll_frame_counter_ % 60 == 0) {
+            const std::optional<sbox::UpdateInfo> result = update_checker_->get_result();
+            if (result.has_value() &&
+                result->update_available &&
+                result->latest_version != settings_manager_.settings().skipped_update_version &&
+                !update_notification_shown_) {
+                update_notification_shown_ = true;
+                pending_update_ = *result;
+            }
+        }
 
         const std::vector<int> completed_jobs = backend_.poll_completed();
         for (int job_id : completed_jobs) {
@@ -444,7 +612,7 @@ void App::run() {
                             loadMoldenFile(path);
                         }
                     } catch (const std::exception& ex) {
-                        std::cerr << "Failed to load Molden file: " << ex.what() << '\n';
+                        SBOX_LOG_ERROR("Failed to load Molden file: %s", ex.what());
                     }
                 }
                 if (ImGui::MenuItem("Open XYZ...")) {
@@ -454,7 +622,7 @@ void App::run() {
                             loadXYZFile(path);
                         }
                     } catch (const std::exception& ex) {
-                        std::cerr << "Failed to load XYZ file: " << ex.what() << '\n';
+                        SBOX_LOG_ERROR("Failed to load XYZ file: %s", ex.what());
                     }
                 }
                 if (ImGui::MenuItem("Open Trajectory...")) {
@@ -464,7 +632,7 @@ void App::run() {
                             loadTrajectoryFile(path);
                         }
                     } catch (const std::exception& ex) {
-                        std::cerr << "Failed to load trajectory file: " << ex.what() << '\n';
+                        SBOX_LOG_ERROR("Failed to load trajectory file: %s", ex.what());
                     }
                 }
                 if (ImGui::MenuItem("Open SDF...")) {
@@ -474,7 +642,7 @@ void App::run() {
                             loadSDFFile(path);
                         }
                     } catch (const std::exception& ex) {
-                        std::cerr << "Failed to load SDF file: " << ex.what() << '\n';
+                        SBOX_LOG_ERROR("Failed to load SDF file: %s", ex.what());
                     }
                 }
                 if (ImGui::MenuItem("Open PDB...")) {
@@ -484,7 +652,7 @@ void App::run() {
                             loadPDBFile(path);
                         }
                     } catch (const std::exception& ex) {
-                        std::cerr << "Failed to load PDB file: " << ex.what() << '\n';
+                        SBOX_LOG_ERROR("Failed to load PDB file: %s", ex.what());
                     }
                 }
                 if (ImGui::MenuItem("Open Cube...")) {
@@ -494,7 +662,7 @@ void App::run() {
                             loadCubeFile(path);
                         }
                     } catch (const std::exception& ex) {
-                        std::cerr << "Failed to load Cube file: " << ex.what() << '\n';
+                        SBOX_LOG_ERROR("Failed to load Cube file: %s", ex.what());
                     }
                 }
                 if (ImGui::MenuItem("Open FCHK...")) {
@@ -504,8 +672,78 @@ void App::run() {
                             loadFchkFile(path);
                         }
                     } catch (const std::exception& ex) {
-                        std::cerr << "Failed to load FCHK file: " << ex.what() << '\n';
+                        SBOX_LOG_ERROR("Failed to load FCHK file: %s", ex.what());
                     }
+                }
+                if (ImGui::MenuItem("Save Screenshot...", "Ctrl+Shift+S")) {
+                    const std::string path = ui::save_file_dialog("Save Screenshot", "png,jpg,bmp", "SchrodingersSandbox.png");
+                    if (!path.empty()) {
+                        renderViewportToTarget(viewport_fbo_, viewport_width_, viewport_height_, false);
+                        if (sbox::render::save_screenshot(path, viewport_fbo_, viewport_width_, viewport_height_)) {
+                            SBOX_LOG_INFO("Screenshot saved to %s", path.c_str());
+                        } else {
+                            SBOX_LOG_ERROR("Failed to save screenshot to %s", path.c_str());
+                        }
+                    }
+                }
+                if (ImGui::BeginMenu("Export Image")) {
+                    if (ImGui::MenuItem("1080p (1920x1080)")) {
+                        const std::string path = ui::save_file_dialog("Save Screenshot", "png", "SchrodingersSandbox_1080p.png");
+                        if (!path.empty()) {
+                            if (sbox::render::save_screenshot_highres(path, 1920, 1080, [this](unsigned int fbo, int w, int h) {
+                                    renderViewportToTarget(fbo, w, h, false);
+                                })) {
+                                SBOX_LOG_INFO("High-resolution screenshot saved to %s", path.c_str());
+                            } else {
+                                SBOX_LOG_ERROR("Failed to save high-resolution screenshot to %s", path.c_str());
+                            }
+                        }
+                    }
+                    if (ImGui::MenuItem("4K (3840x2160)")) {
+                        const std::string path = ui::save_file_dialog("Save Screenshot", "png", "SchrodingersSandbox_4k.png");
+                        if (!path.empty()) {
+                            if (sbox::render::save_screenshot_highres(path, 3840, 2160, [this](unsigned int fbo, int w, int h) {
+                                    renderViewportToTarget(fbo, w, h, false);
+                                })) {
+                                SBOX_LOG_INFO("4K screenshot saved to %s", path.c_str());
+                            } else {
+                                SBOX_LOG_ERROR("Failed to save 4K screenshot to %s", path.c_str());
+                            }
+                            ensureViewportTarget(viewport_width_, viewport_height_);
+                        }
+                    }
+                    if (ImGui::MenuItem("Transparent Background (PNG)")) {
+                        const std::string path = ui::save_file_dialog("Save Screenshot", "png", "SchrodingersSandbox_transparent.png");
+                        if (!path.empty()) {
+                            renderViewportToTarget(viewport_fbo_, viewport_width_, viewport_height_, true);
+                            if (sbox::render::save_screenshot_transparent(path, viewport_fbo_, viewport_width_, viewport_height_)) {
+                                SBOX_LOG_INFO("Transparent screenshot saved to %s", path.c_str());
+                            } else {
+                                SBOX_LOG_ERROR("Failed to save transparent screenshot to %s", path.c_str());
+                            }
+                            renderViewportToTarget(viewport_fbo_, viewport_width_, viewport_height_, false);
+                        }
+                    }
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("Recent Files")) {
+                    for (const auto& path : settings_manager_.recent_files()) {
+                        const std::string filename = std::filesystem::path(path).filename().string();
+                        if (ImGui::MenuItem(filename.c_str())) {
+                            try {
+                                load_file_by_extension(path);
+                            } catch (const std::exception& ex) {
+                                SBOX_LOG_ERROR("Failed to load recent file: %s", ex.what());
+                            }
+                        }
+                    }
+                    if (!settings_manager_.recent_files().empty()) {
+                        ImGui::Separator();
+                    }
+                    if (ImGui::MenuItem("Clear Recent Files")) {
+                        settings_manager_.clear_recent_files();
+                    }
+                    ImGui::EndMenu();
                 }
                 ImGui::Separator();
                 if (ImGui::MenuItem("Save Project...")) {
@@ -544,6 +782,10 @@ void App::run() {
                     editor_state_.commands.execute(
                         std::make_unique<sbox::editor::RemoveHydrogensCommand>(), current_molecule_);
                 }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Preferences...", "Cmd+,")) {
+                    state_.show_settings = true;
+                }
                 ImGui::EndMenu();
             }
 
@@ -572,7 +814,40 @@ void App::run() {
                 }
                 ImGui::EndMenu();
             }
+
+            if (ImGui::BeginMenu("Help")) {
+                if (ImGui::MenuItem("Keyboard Shortcuts...")) {
+                    show_shortcuts_ = true;
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("View Log File")) {
+                    open_in_system_viewer((std::filesystem::path(get_app_data_dir()) / "schrodingers_sandbox.log").string());
+                }
+                if (ImGui::MenuItem("Open Data Directory")) {
+                    open_in_system_viewer(get_app_data_dir());
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("About...")) {
+                    show_about_ = true;
+                }
+                ImGui::EndMenu();
+            }
             ImGui::EndMainMenuBar();
+        }
+
+        if ((ImGui::GetIO().KeySuper || ImGui::GetIO().KeyCtrl) && ImGui::IsKeyPressed(ImGuiKey_Comma)) {
+            state_.show_settings = true;
+        }
+        if ((ImGui::GetIO().KeySuper || ImGui::GetIO().KeyCtrl) &&
+            ImGui::GetIO().KeyShift &&
+            ImGui::IsKeyPressed(ImGuiKey_S)) {
+            const std::string path = default_screenshot_path();
+            renderViewportToTarget(viewport_fbo_, viewport_width_, viewport_height_, false);
+            if (sbox::render::save_screenshot(path, viewport_fbo_, viewport_width_, viewport_height_)) {
+                SBOX_LOG_INFO("Screenshot saved to %s", path.c_str());
+            } else {
+                SBOX_LOG_ERROR("Failed to save screenshot to %s", path.c_str());
+            }
         }
 
         if (open_message_popup_) {
@@ -617,6 +892,27 @@ void App::run() {
                 ImGui::CloseCurrentPopup();
             }
             ImGui::EndPopup();
+        }
+
+        if (state_.show_settings) {
+            bool changed = false;
+            ImGui::SetNextWindowSize(ImVec2(600.0f, 500.0f), ImGuiCond_FirstUseEver);
+            if (ImGui::Begin("Preferences", &state_.show_settings)) {
+                ui::draw_settings_panel(settings_manager_.settings(), python_env_, changed);
+                if (changed) {
+                    apply_settings();
+                }
+            }
+            ImGui::End();
+            if (ui::consume_settings_panel_close_request()) {
+                state_.show_settings = false;
+            }
+        }
+
+        ui::draw_about_dialog(show_about_);
+        ui::draw_shortcuts_dialog(show_shortcuts_);
+        if (pending_update_.has_value() && show_update_dialog_) {
+            draw_update_dialog(show_update_dialog_, *pending_update_, settings_manager_);
         }
 
         const ImGuiID dockspace_id = ImGui::GetID("MainDockSpace");
@@ -941,6 +1237,16 @@ void App::run() {
                                   current_molecule_,
                                   editor_state_.selection,
                                   editor_state_.commands);
+            if (settings_manager_.settings().show_atom_labels) {
+                const Eigen::Matrix4f vp = camera_.projectionMatrix() * camera_.viewMatrix();
+                mol_renderer_.render_atom_labels(current_molecule_,
+                                                 vp,
+                                                 viewport_state.pos,
+                                                 viewport_state.size,
+                                                 true,
+                                                 true,
+                                                 settings_manager_.settings().show_hydrogen_labels);
+            }
             if (editor_state_.context_menu.center_view_requested) {
                 editor_state_.context_menu.center_view_requested = false;
                 Eigen::Vector3f target = Eigen::Vector3f::Zero();
@@ -996,7 +1302,13 @@ void App::run() {
             ui::draw_constraint_overlays(state_.constraints, current_molecule_, vp, viewport_state.pos, viewport_state.size);
         }
         draw_color_legend(state_, current_pdb_data_, latest_result_, viewport_state.pos);
-        ui::draw_status_bar(state_);
+        if (settings_manager_.settings().show_status_bar) {
+            bool update_clicked = false;
+            ui::draw_status_bar(state_, settings_manager_.settings().show_fps, pending_update_ ? &*pending_update_ : nullptr, &update_clicked);
+            if (update_clicked) {
+                show_update_dialog_ = true;
+            }
+        }
         const int new_width = std::max(1, static_cast<int>(std::floor(viewport_state.size.x)));
         const int new_height = std::max(1, static_cast<int>(std::floor(viewport_state.size.y)));
         ensureViewportTarget(new_width, new_height);
@@ -1093,7 +1405,7 @@ void App::initImGui() {
     ui::setup_dark_plot_style();
 
     io.Fonts->Clear();
-    constexpr float kFontSize = 15.0f;
+    const float kFontSize = settings_manager_.settings().font_size;
     const std::array<const char*, 8> font_candidates = {
         "/Library/Fonts/Inter-Regular.ttf",
         "/System/Library/Fonts/Supplemental/Inter.ttc",
@@ -1210,6 +1522,44 @@ float App::compute_mol_bound_radius(const sbox::chem::MolecularSystem& mol) cons
         max_r = std::max(max_r, r);
     }
     return max_r;
+}
+
+void App::apply_settings() {
+    sbox::Settings& settings = settings_manager_.settings();
+
+    state_.iso_value = settings.default_iso_value;
+    state_.gamma = settings.default_gamma;
+    state_.mol_render_mode = settings.mol_render_mode;
+    state_.color_mode = settings.color_mode;
+    state_.computation.method = static_cast<sbox::backend::Method>(
+        std::clamp(settings.default_method, 0, static_cast<int>(sbox::backend::Method::GFN_FF)));
+    state_.computation.basis = static_cast<sbox::backend::BasisSetType>(
+        std::clamp(settings.default_basis, 0, static_cast<int>(sbox::backend::BasisSetType::aug_cc_pVTZ)));
+    state_.computation.charge = settings.default_charge;
+    state_.computation.multiplicity = std::max(1, settings.default_multiplicity);
+
+    sbox::render::set_atom_radius_scale(settings.atom_scale);
+    sbox::render::set_bond_radius_scale(settings.bond_scale);
+    glfwSwapInterval(settings.enable_vsync ? 1 : 0);
+
+    if (settings.python_auto_detect) {
+        python_env_.detect();
+        if (python_env_.is_valid()) {
+            settings.python_path = python_env_.info().python_path;
+        }
+    } else if (!settings.python_path.empty()) {
+        python_env_.set_python_path(settings.python_path);
+    }
+
+    if (python_env_.is_valid()) {
+        python_env_.check_packages();
+        backend_.init(python_env_);
+    }
+
+    if (current_molecule_.num_atoms() > 0) {
+        uploadCurrentMoleculeToRenderers();
+    }
+    settings_manager_.save();
 }
 
 void App::applyMOData(const sbox::basis::MOData& mo_data, const std::string& name_hint) {
@@ -1446,6 +1796,8 @@ void App::loadMoldenFile(const std::string& path) {
     applyMOData(sbox::molden::parse_molden_file(path), std::filesystem::path(path).filename().string());
     state_.computation.charge = current_molecule_.charge();
     state_.computation.multiplicity = current_molecule_.multiplicity();
+    settings_manager_.settings().last_open_directory = std::filesystem::path(path).parent_path().string();
+    settings_manager_.add_recent_file(path);
 }
 
 void App::loadCubeFile(const std::string& path) {
@@ -1472,6 +1824,8 @@ void App::loadCubeFile(const std::string& path) {
     clear_mo_summary(state_);
     state_.computation.charge = current_molecule_.charge();
     state_.computation.multiplicity = current_molecule_.multiplicity();
+    settings_manager_.settings().last_open_directory = std::filesystem::path(path).parent_path().string();
+    settings_manager_.add_recent_file(path);
 }
 
 void App::loadXYZFile(const std::string& path) {
@@ -1490,6 +1844,8 @@ void App::loadXYZFile(const std::string& path) {
     clear_mo_summary(state_);
     state_.computation.charge = current_molecule_.charge();
     state_.computation.multiplicity = current_molecule_.multiplicity();
+    settings_manager_.settings().last_open_directory = std::filesystem::path(path).parent_path().string();
+    settings_manager_.add_recent_file(path);
 }
 
 void App::loadTrajectoryFile(const std::string& path) {
@@ -1514,6 +1870,8 @@ void App::loadTrajectoryFile(const std::string& path) {
     state_.computation.multiplicity = current_molecule_.multiplicity();
     state_.optimization_player = {};
     state_.optimization_player.total_frames = current_trajectory_.num_frames();
+    settings_manager_.settings().last_open_directory = std::filesystem::path(path).parent_path().string();
+    settings_manager_.add_recent_file(path);
 }
 
 void App::loadSDFFile(const std::string& path) {
@@ -1530,6 +1888,8 @@ void App::loadSDFFile(const std::string& path) {
     clear_mo_summary(state_);
     state_.computation.charge = current_molecule_.charge();
     state_.computation.multiplicity = current_molecule_.multiplicity();
+    settings_manager_.settings().last_open_directory = std::filesystem::path(path).parent_path().string();
+    settings_manager_.add_recent_file(path);
 }
 
 void App::loadPDBFile(const std::string& path) {
@@ -1547,6 +1907,8 @@ void App::loadPDBFile(const std::string& path) {
     clear_mo_summary(state_);
     state_.computation.charge = current_molecule_.charge();
     state_.computation.multiplicity = current_molecule_.multiplicity();
+    settings_manager_.settings().last_open_directory = std::filesystem::path(path).parent_path().string();
+    settings_manager_.add_recent_file(path);
 }
 
 void App::loadFchkFile(const std::string& path) {
@@ -1600,6 +1962,53 @@ void App::loadFchkFile(const std::string& path) {
     }
     state_.computation.charge = current_molecule_.charge();
     state_.computation.multiplicity = current_molecule_.multiplicity();
+    settings_manager_.settings().last_open_directory = std::filesystem::path(path).parent_path().string();
+    settings_manager_.add_recent_file(path);
+}
+
+void App::loadProjectFile(const std::string& path) {
+    nlohmann::json extra_state;
+    current_molecule_ = sbox::io::load_project(path, &extra_state);
+    current_pdb_data_ = sbox::io::PDBData{};
+    current_trajectory_ = sbox::io::Trajectory{};
+    has_trajectory_ = false;
+    uploadCurrentMoleculeToRenderers();
+    current_mo_data_ = sbox::basis::MOData{};
+    has_mo_data_ = false;
+    has_cube_data_ = false;
+    use_cube_fallback_ = false;
+    clear_mo_summary(state_);
+    state_.molecule_loaded = current_molecule_.num_atoms() > 0;
+    state_.view_mode = ui::ViewMode::MolecularOrbital;
+    state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
+    state_.computation.charge = current_molecule_.charge();
+    state_.computation.multiplicity = current_molecule_.multiplicity();
+    settings_manager_.settings().last_open_directory = std::filesystem::path(path).parent_path().string();
+    settings_manager_.add_recent_file(path);
+}
+
+void App::load_file_by_extension(const std::string& path) {
+    std::string ext = std::filesystem::path(path).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (ext == ".xyz") {
+        loadXYZFile(path);
+    } else if (ext == ".sdf" || ext == ".mol") {
+        loadSDFFile(path);
+    } else if (ext == ".molden") {
+        loadMoldenFile(path);
+    } else if (ext == ".cube") {
+        loadCubeFile(path);
+    } else if (ext == ".fchk" || ext == ".fch") {
+        loadFchkFile(path);
+    } else if (ext == ".pdb" || ext == ".ent") {
+        loadPDBFile(path);
+    } else if (ext == ".sbox") {
+        loadProjectFile(path);
+    } else {
+        throw std::runtime_error("Unsupported file type: " + ext);
+    }
 }
 
 float App::computeMaxDensityEstimate() const {
@@ -1698,16 +2107,40 @@ void App::updateMaxDensityEstimate() {
 }
 
 void App::renderViewportToTexture() {
-    glBindFramebuffer(GL_FRAMEBUFFER, viewport_fbo_);
-    glViewport(0, 0, viewport_width_, viewport_height_);
+    renderViewportToTarget(viewport_fbo_, viewport_width_, viewport_height_, false);
+}
+
+void App::render_single_frame() {
+    window_->pollEvents();
+    updateMaxDensityEstimate();
+    renderViewportToTexture();
+}
+
+void App::render_to_fbo(unsigned int fbo, int w, int h) {
+    renderViewportToTarget(fbo, w, h, false);
+}
+
+ui::AppState& App::state() {
+    return state_;
+}
+
+const ui::AppState& App::state() const {
+    return state_;
+}
+
+void App::renderViewportToTarget(unsigned int fbo, int width, int height, bool transparent_background) {
+    camera_.setViewportSize(static_cast<float>(width), static_cast<float>(height));
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, width, height);
     glEnable(GL_DEPTH_TEST);
-    glClearColor(0.04f, 0.055f, 0.09f, 1.0f);
+    glClearColor(0.04f, 0.055f, 0.09f, transparent_background ? 0.0f : 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     if (state_.view_mode == ui::ViewMode::AtomicOrbital) {
         Shader* active_shader = orbital_shader_ ? orbital_shader_.get() : gradient_shader_.get();
         if (active_shader == nullptr) {
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            camera_.setViewportSize(static_cast<float>(viewport_width_), static_cast<float>(viewport_height_));
             return;
         }
 
@@ -1722,10 +2155,12 @@ void App::renderViewportToTexture() {
             active_shader->setUniform("u_iso_value", state_.iso_value);
             active_shader->setUniform("u_render_mode", state_.render_mode);
             active_shader->setUniform("u_gamma", state_.gamma);
+            active_shader->setUniform("u_volume_steps", settings_manager_.settings().volume_steps);
+            active_shader->setUniform("u_isosurface_steps", settings_manager_.settings().isosurface_steps);
 
             const int res_loc = glGetUniformLocation(active_shader->id(), "u_resolution");
             if (res_loc >= 0) {
-                glUniform2f(res_loc, static_cast<float>(viewport_width_), static_cast<float>(viewport_height_));
+                glUniform2f(res_loc, static_cast<float>(width), static_cast<float>(height));
             }
 
             const int density_loc = glGetUniformLocation(active_shader->id(), "u_max_density");
@@ -1738,6 +2173,7 @@ void App::renderViewportToTexture() {
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glBindVertexArray(0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        camera_.setViewportSize(static_cast<float>(viewport_width_), static_cast<float>(viewport_height_));
         return;
     }
 
@@ -1746,7 +2182,7 @@ void App::renderViewportToTexture() {
     state_.lod_bonds_rendered = 0;
 
     if (mol_renderer_.has_data()) {
-        if (current_molecule_.num_atoms() > 200) {
+        if (current_molecule_.num_atoms() > settings_manager_.settings().lod_threshold_atoms) {
             lod_renderer_.render(camera_.viewMatrix(),
                                  camera_.projectionMatrix(),
                                  camera_.camera_position(),
@@ -1798,10 +2234,12 @@ void App::renderViewportToTexture() {
         active->setUniform("u_gamma", state_.gamma);
         active->setUniform("u_max_density", max_density_estimate_);
         active->setUniform("u_bound_radius", state_.mol_bound_radius);
+        active->setUniform("u_volume_steps", settings_manager_.settings().volume_steps);
+        active->setUniform("u_isosurface_steps", settings_manager_.settings().isosurface_steps);
 
         const int res_loc = glGetUniformLocation(active->id(), "u_resolution");
         if (res_loc >= 0) {
-            glUniform2f(res_loc, static_cast<float>(viewport_width_), static_cast<float>(viewport_height_));
+            glUniform2f(res_loc, static_cast<float>(width), static_cast<float>(height));
         }
 
         if (active == esp_shader_.get()) {
@@ -1874,12 +2312,15 @@ void App::renderViewportToTexture() {
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    camera_.setViewportSize(static_cast<float>(viewport_width_), static_cast<float>(viewport_height_));
 }
 
 void App::uploadCurrentMoleculeToRenderers() {
     has_d_orbital_analysis_ = false;
     current_d_orbitals_ = {};
     current_metal_index_ = -1;
+    sbox::render::set_atom_radius_scale(settings_manager_.settings().atom_scale);
+    sbox::render::set_bond_radius_scale(settings_manager_.settings().bond_scale);
     const auto color_mode = static_cast<sbox::render::ColorMode>(state_.color_mode);
     const sbox::io::PDBData* pdb_ptr = current_pdb_data_.atoms.empty() ? nullptr : &current_pdb_data_;
     const std::vector<double>* charges = current_charges_for_render(latest_result_);

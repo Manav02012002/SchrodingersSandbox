@@ -1,11 +1,11 @@
 #include "renderer/shader.h"
+#include "core/logging.h"
 
 #include <glad/gl.h>
 
 #include <Eigen/Dense>
 
 #include <fstream>
-#include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -31,7 +31,7 @@ Shader::Shader(const std::string& vertex_path, const std::string& fragment_path)
         glGetProgramiv(program_id_, GL_INFO_LOG_LENGTH, &log_len);
         std::vector<char> log(static_cast<std::size_t>(log_len));
         glGetProgramInfoLog(program_id_, log_len, nullptr, log.data());
-        std::cerr << "Shader link error: " << log.data() << '\n';
+        SBOX_LOG_ERROR("Shader link error: %s", log.data());
 
         glDeleteShader(vertex_shader);
         glDeleteShader(fragment_shader);
@@ -106,7 +106,7 @@ unsigned int Shader::Compile(unsigned int type, const std::string& source, const
         glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &log_len);
         std::vector<char> log(static_cast<std::size_t>(log_len));
         glGetShaderInfoLog(shader, log_len, nullptr, log.data());
-        std::cerr << "Shader compile error in " << path << ": " << log.data() << '\n';
+        SBOX_LOG_ERROR("Shader compile error in %s: %s", path.c_str(), log.data());
         glDeleteShader(shader);
         throw std::runtime_error("Failed to compile shader: " + path);
     }

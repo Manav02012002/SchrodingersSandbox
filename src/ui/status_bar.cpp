@@ -11,7 +11,7 @@
 
 namespace sbox::ui {
 
-void draw_status_bar(const AppState& state) {
+void draw_status_bar(const AppState& state, bool show_fps, const sbox::UpdateInfo* pending_update, bool* update_clicked) {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     constexpr float kStatusBarHeight = 28.0f;
     const ImGuiWindowFlags flags =
@@ -37,15 +37,26 @@ void draw_status_bar(const AppState& state) {
     ImGui::TextUnformatted(" | ");
     ImGui::SameLine();
     ImGui::Text("Zeff: %.3f", state.current_Zeff);
-    ImGui::SameLine();
-    ImGui::TextUnformatted(" | ");
-    ImGui::SameLine();
-    ImGui::Text("FPS: %.1f", fps);
+    if (show_fps) {
+        ImGui::SameLine();
+        ImGui::TextUnformatted(" | ");
+        ImGui::SameLine();
+        ImGui::Text("FPS: %.1f", fps);
+    }
     if (state.view_mode == ViewMode::MolecularOrbital && state.molecule_loaded && state.lod_atoms_rendered > 0) {
         ImGui::SameLine();
         ImGui::TextUnformatted(" | ");
         ImGui::SameLine();
         ImGui::Text("Rendered: %d/%d atoms", state.lod_atoms_rendered, state.lod_atoms_rendered + state.lod_atoms_culled);
+    }
+    if (pending_update != nullptr && pending_update->update_available) {
+        ImGui::SameLine();
+        ImGui::TextUnformatted(" | ");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.3f, 1.0f), "Update available: %s", pending_update->latest_version.c_str());
+        if (update_clicked != nullptr && ImGui::IsItemClicked()) {
+            *update_clicked = true;
+        }
     }
 
     ImGui::End();

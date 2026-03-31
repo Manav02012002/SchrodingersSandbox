@@ -15,6 +15,7 @@ uniform mat3 u_world_to_grid;
 uniform ivec3 u_grid_dims;
 uniform float u_esp_min;
 uniform float u_esp_max;
+uniform int u_isosurface_steps;
 
 const vec3 kBackground = vec3(0.04, 0.055, 0.09);
 
@@ -61,7 +62,7 @@ vec3 density_normal(vec3 p) {
 }
 
 bool find_isosurface(vec3 ro, vec3 rd, float t_start, float t_end, out vec3 hit_point) {
-    const int steps = 256;
+    int steps = clamp(u_isosurface_steps, 1, 512);
     float step_size = (t_end - t_start) / float(steps);
     float t_prev = t_start;
     float prev_density = sample_density(ro + rd * t_prev);

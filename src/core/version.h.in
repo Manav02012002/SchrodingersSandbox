@@ -1,0 +1,11 @@
+#pragma once
+
+namespace sbox {
+
+inline constexpr const char* VERSION = "@GIT_VERSION@";
+inline constexpr const char* APP_NAME = "Schrödinger's Sandbox";
+inline constexpr int VERSION_MAJOR = 0;
+inline constexpr int VERSION_MINOR = 1;
+inline constexpr int VERSION_PATCH = 0;
+
+}  // namespace sbox

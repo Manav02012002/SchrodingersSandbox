@@ -1,7 +1,9 @@
 #include "backend/backend_manager.h"
 
 #include "core/elements.h"
+#include "core/logging.h"
 #include "core/molden_parser.h"
+#include "core/paths.h"
 
 #include <json.hpp>
 
@@ -12,7 +14,6 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -54,21 +55,6 @@ std::string scan_coord_type_to_string(JobSpec::ScanSpec::CoordType type) {
     case JobSpec::ScanSpec::CoordType::Dihedral: return "dihedral";
     }
     return "distance";
-}
-
-std::filesystem::path detect_scripts_dir() {
-    const std::filesystem::path cwd = std::filesystem::current_path();
-    const std::vector<std::filesystem::path> candidates = {
-        cwd / "data/scripts",
-        cwd / "../data/scripts",
-        cwd / "../../data/scripts",
-    };
-    for (const auto& candidate : candidates) {
-        if (std::filesystem::exists(candidate / "pyscf_driver.py")) {
-            return std::filesystem::weakly_canonical(candidate);
-        }
-    }
-    return cwd / "data/scripts";
 }
 
 double vec3_component_or_zero(const json& j, std::size_t index) {
@@ -159,7 +145,7 @@ std::vector<sbox::chem::MolecularSystem> read_xyz_trajectory(const std::filesyst
 }  // namespace
 
 BackendManager::BackendManager()
-    : scripts_dir_(detect_scripts_dir().string()) {}
+    : scripts_dir_(std::filesystem::path(sbox::get_script_path("pyscf_driver.py")).parent_path().string()) {}
 
 BackendManager::~BackendManager() {
     std::vector<RunningJob*> jobs;
@@ -528,8 +514,7 @@ void BackendManager::write_job_json(const JobSpec& spec, const std::string& work
     j["cube_resolution"] = 80;
 
     if (request_frequencies && !spec.optimize_geometry) {
-        std::cerr << "Warning: frequency calculation requested without geometry optimization; "
-                     "results will use the current geometry.\n";
+        SBOX_LOG_WARN("Frequency calculation requested without geometry optimization; results will use the current geometry.");
     }
 
     std::ofstream out(std::filesystem::path(work_dir) / "job.json");
@@ -802,7 +787,7 @@ std::string BackendManager::driver_script(const JobSpec& spec) const {
     } else if (method_is_xtb(spec.method)) {
         script_name = "xtb_driver.py";
     }
-    return (std::filesystem::path(scripts_dir_) / script_name).string();
+    return sbox::get_script_path(script_name);
 }
 
 }  // namespace sbox::backend

@@ -95,6 +95,9 @@ ViewportPanelState draw_viewport(AppState& state, unsigned int texture_id) {
         ImGui::Checkbox("Bond Orders", &state.show_bond_orders);
         ImGui::Checkbox("Dipole Moment", &state.show_dipole);
         ImGui::Checkbox("ESP Surface", &state.show_esp_surface);
+        if (ImGui::Checkbox("Symmetry Elements", &state.show_symmetry_elements) && state.show_symmetry_elements) {
+            state.symmetry_elements_dirty = true;
+        }
         ImGui::Separator();
 
         viewport.size = ImGui::GetContentRegionAvail();

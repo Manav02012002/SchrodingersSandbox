@@ -54,6 +54,10 @@ public:
                 const Eigen::Matrix4f& proj_matrix,
                 const Eigen::Vector3f& camera_pos,
                 MolRenderMode mode = MolRenderMode::BallAndStick);
+    void render_gbuffer(const Eigen::Matrix4f& view_matrix,
+                        const Eigen::Matrix4f& proj_matrix,
+                        const Eigen::Vector3f& camera_pos,
+                        MolRenderMode mode = MolRenderMode::BallAndStick);
     void render_selection(const Eigen::Matrix4f& view_matrix,
                           const Eigen::Matrix4f& proj_matrix,
                           const Eigen::Vector3f& camera_pos,
@@ -85,6 +89,8 @@ private:
 
     std::unique_ptr<sbox::Shader> atom_shader_;
     std::unique_ptr<sbox::Shader> bond_shader_;
+    std::unique_ptr<sbox::Shader> gbuffer_atom_shader_;
+    std::unique_ptr<sbox::Shader> gbuffer_bond_shader_;
 
     std::vector<float> atom_instances_;
     std::vector<float> bond_instances_;

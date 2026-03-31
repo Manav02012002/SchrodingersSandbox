@@ -1,9 +1,19 @@
+// HiDPI manual test checklist:
+// 1. On Retina Mac: verify text is sharp, not blurry
+// 2. On Retina Mac: verify orbital rendering is sharp (not pixelated)
+// 3. On Retina Mac: verify mouse picking works (click on atoms hits correctly)
+// 4. On Retina Mac: verify screenshots at viewport resolution produce 2x pixel images
+// 5. On non-Retina display: verify everything still works at scale=1.0
+// 6. Moving window between Retina and non-Retina: verify resize and re-render
+
 #include "ui/app.h"
 
 #include "core/logging.h"
 #include "core/settings.h"
 #include "core/update_checker.h"
 #include "ui/about_dialog.h"
+#include "ui/annotation_editor.h"
+#include "ui/annotations.h"
 #include "ui/bond_order_panel.h"
 #include "core/gaussian_eval.h"
 #include "core/hydrogen.h"
@@ -20,6 +30,7 @@
 #include "ui/dos_panel.h"
 #include "ui/editor_toolbar.h"
 #include "ui/esp_controls.h"
+#include "ui/export_dialog.h"
 #include "ui/file_dialog.h"
 #include "ui/ir_spectrum_panel.h"
 #include "ui/mo_diagram.h"
@@ -60,6 +71,103 @@
 namespace sbox {
 
 namespace {
+
+constexpr std::size_t kRenderPassCount =
+    static_cast<std::size_t>(App::GpuTimingState::Pass::Count);
+
+const char* render_pass_name(App::GpuTimingState::Pass pass) {
+    switch (pass) {
+    case App::GpuTimingState::Pass::GBuffer: return "G-buffer";
+    case App::GpuTimingState::Pass::SSAO: return "SSAO";
+    case App::GpuTimingState::Pass::Shadows: return "Shadows";
+    case App::GpuTimingState::Pass::Lighting: return "Lighting";
+    case App::GpuTimingState::Pass::Orbitals: return "Orbitals";
+    case App::GpuTimingState::Pass::Post: return "Post";
+    case App::GpuTimingState::Pass::Count: break;
+    }
+    return "Unknown";
+}
+
+void ensure_gpu_timing_queries(App::GpuTimingState& state) {
+    if (state.initialized) {
+        return;
+    }
+    for (auto& pair : state.queries) {
+        glGenQueries(2, pair.data());
+    }
+    state.initialized = true;
+}
+
+void begin_gpu_timed_pass(App::GpuTimingState& state, App::GpuTimingState::Pass pass) {
+    ensure_gpu_timing_queries(state);
+    glQueryCounter(state.queries[static_cast<std::size_t>(pass)][0], GL_TIMESTAMP);
+}
+
+void end_gpu_timed_pass(App::GpuTimingState& state, App::GpuTimingState::Pass pass) {
+    ensure_gpu_timing_queries(state);
+    glQueryCounter(state.queries[static_cast<std::size_t>(pass)][1], GL_TIMESTAMP);
+}
+
+void update_render_stats_summary(App::GpuTimingState& state, ui::AppState& app_state) {
+    if (!state.initialized) {
+        app_state.render_stats_summary.clear();
+        return;
+    }
+
+    std::array<double, kRenderPassCount> timings_ms{};
+    bool any_available = false;
+    double total_ms = 0.0;
+    for (std::size_t i = 0; i < kRenderPassCount; ++i) {
+        GLuint available_start = GL_FALSE;
+        GLuint available_end = GL_FALSE;
+        glGetQueryObjectuiv(state.queries[i][0], GL_QUERY_RESULT_AVAILABLE, &available_start);
+        glGetQueryObjectuiv(state.queries[i][1], GL_QUERY_RESULT_AVAILABLE, &available_end);
+        if (available_start == GL_FALSE || available_end == GL_FALSE) {
+            continue;
+        }
+        GLuint64 start_ns = 0;
+        GLuint64 end_ns = 0;
+        glGetQueryObjectui64v(state.queries[i][0], GL_QUERY_RESULT, &start_ns);
+        glGetQueryObjectui64v(state.queries[i][1], GL_QUERY_RESULT, &end_ns);
+        if (end_ns >= start_ns) {
+            timings_ms[i] = static_cast<double>(end_ns - start_ns) / 1000000.0;
+            total_ms += timings_ms[i];
+            any_available = true;
+        }
+    }
+
+    if (!any_available) {
+        return;
+    }
+
+    char buffer[512];
+    std::snprintf(buffer,
+                  sizeof(buffer),
+                  "%s: %.2fms | %s: %.2fms | %s: %.2fms | %s: %.2fms | %s: %.2fms | %s: %.2fms | Total: %.2fms",
+                  render_pass_name(App::GpuTimingState::Pass::GBuffer), timings_ms[0],
+                  render_pass_name(App::GpuTimingState::Pass::SSAO), timings_ms[1],
+                  render_pass_name(App::GpuTimingState::Pass::Shadows), timings_ms[2],
+                  render_pass_name(App::GpuTimingState::Pass::Lighting), timings_ms[3],
+                  render_pass_name(App::GpuTimingState::Pass::Orbitals), timings_ms[4],
+                  render_pass_name(App::GpuTimingState::Pass::Post), timings_ms[5],
+                  total_ms);
+    app_state.render_stats_summary = buffer;
+}
+
+void draw_render_stats_overlay(const std::string& summary,
+                               const ImVec2& viewport_pos,
+                               const ImVec2& viewport_size) {
+    if (summary.empty() || viewport_size.x <= 1.0f || viewport_size.y <= 1.0f) {
+        return;
+    }
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    const ImVec2 text_size = ImGui::CalcTextSize(summary.c_str());
+    const ImVec2 box_max(viewport_pos.x + viewport_size.x - 12.0f, viewport_pos.y + 12.0f + text_size.y + 12.0f);
+    const ImVec2 box_min(box_max.x - text_size.x - 20.0f, viewport_pos.y + 12.0f);
+    draw->AddRectFilled(box_min, box_max, IM_COL32(14, 18, 24, 210), 6.0f);
+    draw->AddRect(box_min, box_max, IM_COL32(95, 108, 122, 200), 6.0f);
+    draw->AddText(ImVec2(box_min.x + 10.0f, box_min.y + 6.0f), IM_COL32(235, 240, 248, 240), summary.c_str());
+}
 
 std::unique_ptr<Shader> try_load_shader(const std::string& vertex,
                                         const std::string& fragment,
@@ -402,6 +510,12 @@ App::App() {
     esp_shader_ = try_load_shader(sbox::get_shader_path("mo_raymarch.vert"),
                                   sbox::get_shader_path("esp_surface.frag"),
                                   "ESP Surface");
+    nci_shader_ = try_load_shader(sbox::get_shader_path("fullscreen_quad.vert"),
+                                  sbox::get_shader_path("nci_surface.frag"),
+                                  "NCI Surface");
+    deferred_lighting_shader_ = try_load_shader(sbox::get_shader_path("deferred_lighting.vert"),
+                                                sbox::get_shader_path("deferred_lighting.frag"),
+                                                "Deferred Lighting");
 
     glGenVertexArrays(1, &fullscreen_vao_);
 
@@ -414,6 +528,12 @@ App::App() {
 
     glfwSetWindowUserPointer(window_->handle(), this);
     glfwSetScrollCallback(window_->handle(), &App::ScrollCallback);
+    glfwSetWindowContentScaleCallback(window_->handle(), [](GLFWwindow* win, float x_scale, float y_scale) {
+        auto* self = static_cast<App*>(glfwGetWindowUserPointer(win));
+        if (self != nullptr) {
+            self->on_content_scale_change(x_scale, y_scale);
+        }
+    });
 
     editor_state_.select_mode = std::make_unique<sbox::editor::SelectMode>();
     editor_state_.draw_mode = std::make_unique<sbox::editor::DrawMode>();
@@ -447,6 +567,7 @@ App::App() {
 
     initImGui();
     ensureViewportTarget(viewport_width_, viewport_height_);
+    state_.current_rendering_mode = "Rendering: Forward";
 }
 
 App::~App() {
@@ -475,6 +596,13 @@ App::~App() {
     if (fullscreen_vao_ != 0U) {
         glDeleteVertexArrays(1, &fullscreen_vao_);
         fullscreen_vao_ = 0;
+    }
+
+    if (gpu_timing_.initialized) {
+        for (auto& pair : gpu_timing_.queries) {
+            glDeleteQueries(2, pair.data());
+        }
+        gpu_timing_.initialized = false;
     }
 
     if (viewport_depth_rbo_ != 0U) {
@@ -726,6 +854,9 @@ void App::run() {
                     }
                     ImGui::EndMenu();
                 }
+                if (ImGui::MenuItem("Export Animation...")) {
+                    show_export_dialog_ = true;
+                }
                 if (ImGui::BeginMenu("Recent Files")) {
                     for (const auto& path : settings_manager_.recent_files()) {
                         const std::string filename = std::filesystem::path(path).filename().string();
@@ -911,6 +1042,7 @@ void App::run() {
 
         ui::draw_about_dialog(show_about_);
         ui::draw_shortcuts_dialog(show_shortcuts_);
+        ui::draw_export_dialog(show_export_dialog_, *this);
         if (pending_update_.has_value() && show_update_dialog_) {
             draw_update_dialog(show_update_dialog_, *pending_update_, settings_manager_);
         }
@@ -955,6 +1087,7 @@ void App::run() {
                 ImGui::DockBuilderSplitNode(editor_node, ImGuiDir_Down, 0.32f, &browser_stack_node, &editor_node);
 
                 ImGui::DockBuilderDockWindow("Editor", editor_node);
+                ImGui::DockBuilderDockWindow("Annotations", editor_node);
                 ImGui::DockBuilderDockWindow("Orbital Browser", browser_stack_node);
                 ImGui::DockBuilderDockWindow("Atomic Properties", properties_node);
                 ImGui::DockBuilderDockWindow("Energy Levels", properties_node);
@@ -989,6 +1122,7 @@ void App::run() {
         if (state_.view_mode == ui::ViewMode::MolecularOrbital) {
             ui::draw_editor_toolbar(editor_state_, current_molecule_);
             ui::draw_constraint_editor(state_, current_molecule_, editor_state_.selection);
+            ui::draw_annotation_editor(annotation_manager_, state_, current_molecule_, editor_state_.selection);
         }
         if (state_.show_complex_builder) {
             ui::draw_complex_builder(state_, current_molecule_, editor_state_.commands, ligand_library_);
@@ -1018,6 +1152,7 @@ void App::run() {
         }
         if (latest_result_.has_value() && latest_result_->converged()) {
             ui::draw_results_panel(state_, *latest_result_, current_molecule_);
+            ui::draw_nci_panel(state_, *latest_result_);
             if (has_d_orbital_analysis_) {
                 ui::draw_crystal_field_panel(state_, *latest_result_, current_molecule_);
                 ui::draw_d_orbital_viewer(state_, *latest_result_, current_molecule_, current_d_orbitals_);
@@ -1047,6 +1182,52 @@ void App::run() {
             case ui::PropertyView::ESPControls:
                 ui::draw_esp_controls(state_, *latest_result_);
                 break;
+            case ui::PropertyView::NCI:
+                break;
+            }
+        }
+
+        if (state_.nci_compute_requested && latest_result_.has_value() && latest_result_->has_density_cube) {
+            state_.nci_compute_requested = false;
+            try {
+                nci_grid_ = sbox::analysis::compute_nci(latest_result_->density_cube,
+                                                        std::max(0.5f, state_.nci_rdg_iso),
+                                                        state_.nci_rho_cutoff);
+                const auto& grid = *nci_grid_;
+                nci_rdg_texture_.upload(grid.origin,
+                                        Eigen::Vector3d(grid.step.x(), 0.0, 0.0),
+                                        Eigen::Vector3d(0.0, grid.step.y(), 0.0),
+                                        Eigen::Vector3d(0.0, 0.0, grid.step.z()),
+                                        grid.nx,
+                                        grid.ny,
+                                        grid.nz,
+                                        grid.rdg.data());
+                nci_sign_texture_.upload(grid.origin,
+                                         Eigen::Vector3d(grid.step.x(), 0.0, 0.0),
+                                         Eigen::Vector3d(0.0, grid.step.y(), 0.0),
+                                         Eigen::Vector3d(0.0, 0.0, grid.step.z()),
+                                         grid.nx,
+                                         grid.ny,
+                                         grid.nz,
+                                         grid.sign_lambda2_rho.data());
+
+                state_.nci_plot_rdg.clear();
+                state_.nci_plot_sign_rho.clear();
+                const std::size_t stride = std::max<std::size_t>(1, grid.rdg.size() / 8000);
+                state_.nci_plot_rdg.reserve(grid.rdg.size() / stride + 1);
+                state_.nci_plot_sign_rho.reserve(grid.sign_lambda2_rho.size() / stride + 1);
+                for (std::size_t i = 0; i < grid.rdg.size(); i += stride) {
+                    if (grid.rdg[i] >= 9.99f) {
+                        continue;
+                    }
+                    state_.nci_plot_rdg.push_back(grid.rdg[i]);
+                    state_.nci_plot_sign_rho.push_back(grid.sign_lambda2_rho[i]);
+                }
+                state_.show_nci = true;
+            } catch (const std::exception& ex) {
+                message_popup_title_ = "NCI Analysis";
+                message_popup_text_ = ex.what();
+                open_message_popup_ = true;
             }
         }
 
@@ -1097,6 +1278,15 @@ void App::run() {
         }
 
         const ui::ViewportPanelState viewport_state = ui::draw_viewport(state_, viewport_color_tex_);
+
+        if (state_.view_mode == ui::ViewMode::MolecularOrbital &&
+            state_.show_symmetry_elements &&
+            state_.symmetry_elements_dirty &&
+            current_molecule_.num_atoms() > 0) {
+            const sbox::chem::PointGroup pg = sbox::chem::detect_point_group(current_molecule_, 0.3);
+            state_.cached_symmetry_elements = ui::extract_symmetry_elements(current_molecule_, pg, 0.3);
+            state_.symmetry_elements_dirty = false;
+        }
 
         if (state_.view_mode == ui::ViewMode::MolecularOrbital && viewport_state.hovered) {
             const ImVec2 mouse_pos = ImGui::GetIO().MousePos;
@@ -1233,6 +1423,10 @@ void App::run() {
                                    viewport_state.pos,
                                    viewport_state.size);
             }
+            {
+                const Eigen::Matrix4f vp = camera_.projectionMatrix() * camera_.viewMatrix();
+                annotation_manager_.draw(vp, viewport_state.pos, viewport_state.size);
+            }
             ui::draw_context_menu(editor_state_.context_menu,
                                   current_molecule_,
                                   editor_state_.selection,
@@ -1246,6 +1440,15 @@ void App::run() {
                                                  true,
                                                  true,
                                                  settings_manager_.settings().show_hydrogen_labels);
+            }
+            if (state_.show_symmetry_elements && !state_.cached_symmetry_elements.empty()) {
+                ui::draw_symmetry_overlays(state_.cached_symmetry_elements,
+                                           current_molecule_,
+                                           camera_.viewMatrix(),
+                                           camera_.projectionMatrix(),
+                                           viewport_state.pos,
+                                           viewport_state.size,
+                                           state_.mol_bound_radius);
             }
             if (editor_state_.context_menu.center_view_requested) {
                 editor_state_.context_menu.center_view_requested = false;
@@ -1301,6 +1504,9 @@ void App::run() {
             const Eigen::Matrix4f vp = camera_.projectionMatrix() * camera_.viewMatrix();
             ui::draw_constraint_overlays(state_.constraints, current_molecule_, vp, viewport_state.pos, viewport_state.size);
         }
+        if (settings_manager_.settings().show_render_stats) {
+            draw_render_stats_overlay(state_.render_stats_summary, viewport_state.pos, viewport_state.size);
+        }
         draw_color_legend(state_, current_pdb_data_, latest_result_, viewport_state.pos);
         if (settings_manager_.settings().show_status_bar) {
             bool update_clicked = false;
@@ -1309,8 +1515,9 @@ void App::run() {
                 show_update_dialog_ = true;
             }
         }
-        const int new_width = std::max(1, static_cast<int>(std::floor(viewport_state.size.x)));
-        const int new_height = std::max(1, static_cast<int>(std::floor(viewport_state.size.y)));
+        const float content_scale = window_->content_scale();
+        const int new_width = std::max(1, static_cast<int>(std::floor(viewport_state.size.x * content_scale)));
+        const int new_height = std::max(1, static_cast<int>(std::floor(viewport_state.size.y * content_scale)));
         ensureViewportTarget(new_width, new_height);
 
         camera_.setViewportSize(static_cast<float>(viewport_width_), static_cast<float>(viewport_height_));
@@ -1403,9 +1610,41 @@ void App::initImGui() {
     colors[ImGuiCol_TabUnfocused] = ImVec4(0.08f, 0.18f, 0.22f, 1.0f);
     colors[ImGuiCol_TabUnfocusedActive] = ImVec4(0.12f, 0.38f, 0.45f, 1.0f);
     ui::setup_dark_plot_style();
+    base_imgui_style_ = style;
+    base_imgui_style_initialized_ = true;
+
+    if (!ImGui_ImplGlfw_InitForOpenGL(window_->handle(), true)) {
+        throw std::runtime_error("Failed to initialize ImGui GLFW backend");
+    }
+    if (!ImGui_ImplOpenGL3_Init("#version 410")) {
+        throw std::runtime_error("Failed to initialize ImGui OpenGL3 backend");
+    }
+    rebuild_imgui_scale();
+}
+
+void App::shutdownImGui() {
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImPlot::DestroyContext();
+    ImGui::DestroyContext();
+}
+
+void App::rebuild_imgui_scale() {
+    if (!base_imgui_style_initialized_) {
+        return;
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+    const float scale = window_ != nullptr ? window_->content_scale() : 1.0f;
+    const float effective_scale = std::max(0.1f, scale * settings_manager_.settings().ui_scale);
+    imgui_effective_scale_ = effective_scale;
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style = base_imgui_style_;
+    style.ScaleAllSizes(effective_scale);
 
     io.Fonts->Clear();
-    const float kFontSize = settings_manager_.settings().font_size;
+    const float font_size = settings_manager_.settings().font_size * effective_scale;
     const std::array<const char*, 8> font_candidates = {
         "/Library/Fonts/Inter-Regular.ttf",
         "/System/Library/Fonts/Supplemental/Inter.ttc",
@@ -1420,7 +1659,7 @@ void App::initImGui() {
     ImFont* ui_font = nullptr;
     for (const char* path : font_candidates) {
         if (std::filesystem::exists(path)) {
-            ui_font = io.Fonts->AddFontFromFileTTF(path, kFontSize);
+            ui_font = io.Fonts->AddFontFromFileTTF(path, font_size);
             if (ui_font != nullptr) {
                 break;
             }
@@ -1429,24 +1668,19 @@ void App::initImGui() {
 
     if (ui_font == nullptr) {
         ImFontConfig font_cfg;
-        font_cfg.SizePixels = kFontSize;
+        font_cfg.SizePixels = font_size;
         ui_font = io.Fonts->AddFontDefault(&font_cfg);
     }
-    io.FontDefault = ui_font;
 
-    if (!ImGui_ImplGlfw_InitForOpenGL(window_->handle(), true)) {
-        throw std::runtime_error("Failed to initialize ImGui GLFW backend");
-    }
-    if (!ImGui_ImplOpenGL3_Init("#version 410")) {
-        throw std::runtime_error("Failed to initialize ImGui OpenGL3 backend");
-    }
+    io.FontDefault = ui_font;
+    io.FontGlobalScale = 1.0f;
+    ImGui_ImplOpenGL3_DestroyDeviceObjects();
+    ImGui_ImplOpenGL3_CreateDeviceObjects();
 }
 
-void App::shutdownImGui() {
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
-    ImPlot::DestroyContext();
-    ImGui::DestroyContext();
+void App::on_content_scale_change(float x_scale, float y_scale) {
+    SBOX_LOG_INFO("Window content scale changed: x=%.3f y=%.3f", x_scale, y_scale);
+    rebuild_imgui_scale();
 }
 
 void App::ensureViewportTarget(int width, int height) {
@@ -1499,6 +1733,26 @@ void App::ensureViewportTarget(int width, int height) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glBindRenderbuffer(GL_RENDERBUFFER, 0);
     glBindTexture(GL_TEXTURE_2D, 0);
+
+    try {
+        gbuffer_.resize(viewport_width_, viewport_height_);
+    } catch (const std::exception& ex) {
+        SBOX_LOG_WARN("Failed to resize G-buffer: %s", ex.what());
+    }
+    try {
+        if (!ssao_.is_initialized()) {
+            ssao_.init(viewport_width_, viewport_height_);
+        } else {
+            ssao_.resize(viewport_width_, viewport_height_);
+        }
+    } catch (const std::exception& ex) {
+        SBOX_LOG_WARN("Failed to initialize SSAO targets: %s", ex.what());
+    }
+    try {
+        post_process_.resize(viewport_width_, viewport_height_);
+    } catch (const std::exception& ex) {
+        SBOX_LOG_WARN("Failed to initialize post-process targets: %s", ex.what());
+    }
 }
 
 int App::find_homo_index() const {
@@ -1541,6 +1795,7 @@ void App::apply_settings() {
     sbox::render::set_atom_radius_scale(settings.atom_scale);
     sbox::render::set_bond_radius_scale(settings.bond_scale);
     glfwSwapInterval(settings.enable_vsync ? 1 : 0);
+    rebuild_imgui_scale();
 
     if (settings.python_auto_detect) {
         python_env_.detect();
@@ -1564,6 +1819,11 @@ void App::apply_settings() {
 
 void App::applyMOData(const sbox::basis::MOData& mo_data, const std::string& name_hint) {
     current_mo_data_ = mo_data;
+    nci_grid_.reset();
+    state_.show_nci = false;
+    state_.nci_plot_rdg.clear();
+    state_.nci_plot_sign_rho.clear();
+    state_.nci_compute_requested = false;
     current_molecule_.clear();
     current_pdb_data_ = sbox::io::PDBData{};
     current_molecule_.set_name(name_hint);
@@ -1600,6 +1860,11 @@ void App::applyMOData(const sbox::basis::MOData& mo_data, const std::string& nam
 }
 
 void App::applyBackendResult(const sbox::backend::JobResult& result) {
+    nci_grid_.reset();
+    state_.show_nci = false;
+    state_.nci_plot_rdg.clear();
+    state_.nci_plot_sign_rho.clear();
+    state_.nci_compute_requested = false;
     if (result.has_optimized_geometry) {
         current_molecule_ = result.optimized_geometry;
         current_pdb_data_ = sbox::io::PDBData{};
@@ -1802,6 +2067,11 @@ void App::loadMoldenFile(const std::string& path) {
 
 void App::loadCubeFile(const std::string& path) {
     const sbox::io::CubeData cube = sbox::io::read_cube(path);
+    nci_grid_.reset();
+    state_.show_nci = false;
+    state_.nci_plot_rdg.clear();
+    state_.nci_plot_sign_rho.clear();
+    state_.nci_compute_requested = false;
     current_molecule_.clear();
     current_pdb_data_ = sbox::io::PDBData{};
     current_molecule_.set_name(std::filesystem::path(path).filename().string());
@@ -1829,6 +2099,11 @@ void App::loadCubeFile(const std::string& path) {
 }
 
 void App::loadXYZFile(const std::string& path) {
+    nci_grid_.reset();
+    state_.show_nci = false;
+    state_.nci_plot_rdg.clear();
+    state_.nci_plot_sign_rho.clear();
+    state_.nci_compute_requested = false;
     current_trajectory_ = sbox::io::Trajectory{};
     has_trajectory_ = false;
     current_molecule_ = sbox::io::read_xyz(path);
@@ -1849,6 +2124,11 @@ void App::loadXYZFile(const std::string& path) {
 }
 
 void App::loadTrajectoryFile(const std::string& path) {
+    nci_grid_.reset();
+    state_.show_nci = false;
+    state_.nci_plot_rdg.clear();
+    state_.nci_plot_sign_rho.clear();
+    state_.nci_compute_requested = false;
     current_trajectory_ = sbox::io::read_trajectory_xyz(path);
     has_trajectory_ = !current_trajectory_.empty();
     if (!has_trajectory_) {
@@ -1875,6 +2155,11 @@ void App::loadTrajectoryFile(const std::string& path) {
 }
 
 void App::loadSDFFile(const std::string& path) {
+    nci_grid_.reset();
+    state_.show_nci = false;
+    state_.nci_plot_rdg.clear();
+    state_.nci_plot_sign_rho.clear();
+    state_.nci_compute_requested = false;
     current_molecule_ = sbox::io::read_sdf(path);
     current_pdb_data_ = sbox::io::PDBData{};
     uploadCurrentMoleculeToRenderers();
@@ -1893,6 +2178,11 @@ void App::loadSDFFile(const std::string& path) {
 }
 
 void App::loadPDBFile(const std::string& path) {
+    nci_grid_.reset();
+    state_.show_nci = false;
+    state_.nci_plot_rdg.clear();
+    state_.nci_plot_sign_rho.clear();
+    state_.nci_compute_requested = false;
     current_pdb_data_ = sbox::io::read_pdb(path);
     current_molecule_ = current_pdb_data_.to_molecular_system();
     current_molecule_.set_name(current_pdb_data_.title.empty() ? std::filesystem::path(path).filename().string() : current_pdb_data_.title);
@@ -1912,6 +2202,11 @@ void App::loadPDBFile(const std::string& path) {
 }
 
 void App::loadFchkFile(const std::string& path) {
+    nci_grid_.reset();
+    state_.show_nci = false;
+    state_.nci_plot_rdg.clear();
+    state_.nci_plot_sign_rho.clear();
+    state_.nci_compute_requested = false;
     const sbox::io::FchkData fchk = sbox::io::read_fchk(path);
     current_molecule_.clear();
     current_pdb_data_ = sbox::io::PDBData{};
@@ -1967,6 +2262,11 @@ void App::loadFchkFile(const std::string& path) {
 }
 
 void App::loadProjectFile(const std::string& path) {
+    nci_grid_.reset();
+    state_.show_nci = false;
+    state_.nci_plot_rdg.clear();
+    state_.nci_plot_sign_rho.clear();
+    state_.nci_compute_requested = false;
     nlohmann::json extra_state;
     current_molecule_ = sbox::io::load_project(path, &extra_state);
     current_pdb_data_ = sbox::io::PDBData{};
@@ -2107,7 +2407,20 @@ void App::updateMaxDensityEstimate() {
 }
 
 void App::renderViewportToTexture() {
-    renderViewportToTarget(viewport_fbo_, viewport_width_, viewport_height_, false);
+    const sbox::Settings& settings = settings_manager_.settings();
+    const bool use_deferred =
+        state_.view_mode == ui::ViewMode::MolecularOrbital &&
+        settings.use_deferred_rendering &&
+        deferred_lighting_shader_ != nullptr &&
+        mol_renderer_.has_data() &&
+        state_.mol_render_mode != static_cast<int>(sbox::render::MolRenderMode::Wireframe);
+
+    if (use_deferred) {
+        renderDeferredToTarget(viewport_fbo_, viewport_width_, viewport_height_, false);
+    } else {
+        renderForwardToTarget(viewport_fbo_, viewport_width_, viewport_height_, false);
+    }
+    update_render_stats_summary(gpu_timing_, state_);
 }
 
 void App::render_single_frame() {
@@ -2120,6 +2433,10 @@ void App::render_to_fbo(unsigned int fbo, int w, int h) {
     renderViewportToTarget(fbo, w, h, false);
 }
 
+void App::render_to_fbo(unsigned int fbo, int w, int h, bool transparent_background) {
+    renderViewportToTarget(fbo, w, h, transparent_background);
+}
+
 ui::AppState& App::state() {
     return state_;
 }
@@ -2128,15 +2445,76 @@ const ui::AppState& App::state() const {
     return state_;
 }
 
+Camera& App::camera() {
+    return camera_;
+}
+
+const Camera& App::camera() const {
+    return camera_;
+}
+
+const sbox::chem::MolecularSystem& App::current_molecule() const {
+    return current_molecule_;
+}
+
+const sbox::io::Trajectory& App::current_trajectory() const {
+    return current_trajectory_;
+}
+
+bool App::has_trajectory() const {
+    return has_trajectory_;
+}
+
+bool App::has_mo_data() const {
+    return has_mo_data_;
+}
+
+void App::set_current_molecule_for_export(const sbox::chem::MolecularSystem& mol) {
+    current_molecule_ = mol;
+    current_pdb_data_ = sbox::io::PDBData{};
+    uploadCurrentMoleculeToRenderers();
+    state_.molecule_loaded = current_molecule_.num_atoms() > 0;
+    state_.mol_bound_radius = compute_mol_bound_radius(current_molecule_);
+}
+
 void App::renderViewportToTarget(unsigned int fbo, int width, int height, bool transparent_background) {
+    const sbox::Settings& settings = settings_manager_.settings();
+    const bool use_deferred =
+        state_.view_mode == ui::ViewMode::MolecularOrbital &&
+        settings.use_deferred_rendering &&
+        deferred_lighting_shader_ != nullptr &&
+        mol_renderer_.has_data() &&
+        state_.mol_render_mode != static_cast<int>(sbox::render::MolRenderMode::Wireframe);
+
+    if (use_deferred) {
+        renderDeferredToTarget(fbo, width, height, transparent_background);
+    } else {
+        renderForwardToTarget(fbo, width, height, transparent_background);
+    }
+}
+
+void App::renderForwardToTarget(unsigned int fbo, int width, int height, bool transparent_background) {
     camera_.setViewportSize(static_cast<float>(width), static_cast<float>(height));
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glViewport(0, 0, width, height);
-    glEnable(GL_DEPTH_TEST);
-    glClearColor(0.04f, 0.055f, 0.09f, transparent_background ? 0.0f : 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    state_.current_rendering_mode = "Rendering: Forward";
+    begin_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::GBuffer);
+    end_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::GBuffer);
+    begin_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::SSAO);
+    end_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::SSAO);
+    begin_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Shadows);
+    end_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Shadows);
+    begin_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Lighting);
+    end_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Lighting);
+    begin_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Post);
+    end_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Post);
+    begin_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Orbitals);
 
     if (state_.view_mode == ui::ViewMode::AtomicOrbital) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, width, height);
+        glEnable(GL_DEPTH_TEST);
+        glClearColor(0.04f, 0.055f, 0.09f, transparent_background ? 0.0f : 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
         Shader* active_shader = orbital_shader_ ? orbital_shader_.get() : gradient_shader_.get();
         if (active_shader == nullptr) {
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -2174,12 +2552,19 @@ void App::renderViewportToTarget(unsigned int fbo, int width, int height, bool t
         glBindVertexArray(0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         camera_.setViewportSize(static_cast<float>(viewport_width_), static_cast<float>(viewport_height_));
+        end_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Orbitals);
         return;
     }
 
     state_.lod_atoms_rendered = 0;
     state_.lod_atoms_culled = 0;
     state_.lod_bonds_rendered = 0;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, width, height);
+    glEnable(GL_DEPTH_TEST);
+    glClearColor(0.04f, 0.055f, 0.09f, transparent_background ? 0.0f : 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     if (mol_renderer_.has_data()) {
         if (current_molecule_.num_atoms() > settings_manager_.settings().lod_threshold_atoms) {
@@ -2213,112 +2598,374 @@ void App::renderViewportToTarget(unsigned int fbo, int width, int height, bool t
         }
     }
 
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    begin_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Orbitals);
+    renderOrbitalPass(width, height);
+    renderESPPass(width, height);
+    renderNCIPass(width, height);
+    end_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Orbitals);
+    glDisable(GL_BLEND);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    camera_.setViewportSize(static_cast<float>(viewport_width_), static_cast<float>(viewport_height_));
+    end_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Orbitals);
+}
+
+void App::renderDeferredToTarget(unsigned int fbo, int width, int height, bool transparent_background) {
+    camera_.setViewportSize(static_cast<float>(width), static_cast<float>(height));
+    const sbox::Settings& settings = settings_manager_.settings();
+
+    std::string mode = "Rendering: Deferred";
+    if (settings.enable_ssao && ssao_.is_initialized()) {
+        mode += " + SSAO";
+    }
+    if (settings.enable_shadows && shadow_map_.is_initialized()) {
+        mode += " + Shadows";
+    }
+    if (settings.enable_antialiasing && post_process_.is_initialized()) {
+        mode += " + FXAA";
+    }
+    state_.current_rendering_mode = mode;
+
+    try {
+        gbuffer_.resize(width, height);
+        if (!ssao_.is_initialized()) {
+            ssao_.init(width, height);
+        } else {
+            ssao_.resize(width, height);
+        }
+        if (!post_process_.is_initialized()) {
+            post_process_.init(width, height);
+        } else {
+            post_process_.resize(width, height);
+        }
+    } catch (const std::exception& ex) {
+        SBOX_LOG_WARN("Deferred targets unavailable, falling back to forward rendering: %s", ex.what());
+        renderForwardToTarget(fbo, width, height, transparent_background);
+        return;
+    }
+
+    const Eigen::Vector3f light_dir_world = Eigen::Vector3f(1.0f, 1.0f, 0.5f).normalized();
+    const Eigen::Vector3f light_dir_view =
+        (camera_.viewMatrix().block<3, 3>(0, 0) * light_dir_world).normalized();
+
+    begin_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::GBuffer);
+    gbuffer_.bind_for_writing();
+    glViewport(0, 0, width, height);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    mol_renderer_.render_gbuffer(camera_.viewMatrix(),
+                                 camera_.projectionMatrix(),
+                                 camera_.camera_position(),
+                                 static_cast<sbox::render::MolRenderMode>(state_.mol_render_mode));
+    gbuffer_.unbind();
+    end_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::GBuffer);
+
+    begin_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::SSAO);
+    ssao_.set_parameters(settings.ssao_radius, settings.ssao_power);
+    if (settings.enable_ssao && ssao_.is_initialized()) {
+        ssao_.compute(gbuffer_, camera_.projectionMatrix());
+    }
+    end_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::SSAO);
+
+    begin_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Shadows);
+    if (settings.enable_shadows) {
+        try {
+            if (!shadow_map_.is_initialized() || shadow_map_.resolution() != settings.shadow_resolution) {
+                shadow_map_.init(settings.shadow_resolution);
+            }
+            if (shadow_map_.is_initialized()) {
+                const Eigen::Vector3d com =
+                    current_molecule_.num_atoms() > 0 ? current_molecule_.center_of_mass() : Eigen::Vector3d::Zero();
+                shadow_map_.compute(mol_renderer_,
+                                    current_molecule_,
+                                    com.cast<float>(),
+                                    state_.mol_bound_radius,
+                                    light_dir_world);
+            }
+        } catch (const std::exception& ex) {
+            SBOX_LOG_WARN("Shadow pass unavailable this frame: %s", ex.what());
+        }
+    }
+    end_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Shadows);
+
+    begin_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Lighting);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, width, height);
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glClearColor(0.04f, 0.055f, 0.09f, transparent_background ? 0.0f : 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    deferred_lighting_shader_->bind();
+    deferred_lighting_shader_->setUniform("u_position", 0);
+    deferred_lighting_shader_->setUniform("u_normal", 1);
+    deferred_lighting_shader_->setUniform("u_albedo", 2);
+    deferred_lighting_shader_->setUniform("u_depth", 3);
+    deferred_lighting_shader_->setUniform("u_ssao_texture", 4);
+    deferred_lighting_shader_->setUniform("u_shadow_map", 5);
+    deferred_lighting_shader_->setUniform("u_camera_pos", camera_.camera_position());
+    deferred_lighting_shader_->setUniform("u_light_dir_view", light_dir_view);
+    const Eigen::Matrix4f inv_view = camera_.viewMatrix().inverse();
+    deferred_lighting_shader_->setUniform("u_inv_view", inv_view);
+    deferred_lighting_shader_->setUniform("u_light_vp", shadow_map_.light_vp_matrix());
+    deferred_lighting_shader_->setUniform("u_ssao_enabled",
+                                          (settings.enable_ssao && ssao_.is_initialized()) ? 1.0f : 0.0f);
+    deferred_lighting_shader_->setUniform("u_shadow_enabled",
+                                          (settings.enable_shadows && shadow_map_.is_initialized()) ? 1.0f : 0.0f);
+
+    gbuffer_.bind_position_texture(0);
+    gbuffer_.bind_normal_texture(1);
+    gbuffer_.bind_albedo_texture(2);
+    gbuffer_.bind_depth_texture(3);
+    if (settings.enable_ssao && ssao_.is_initialized()) {
+        ssao_.bind_ao_texture(4);
+    } else {
+        glActiveTexture(GL_TEXTURE4);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+    if (settings.enable_shadows && shadow_map_.is_initialized()) {
+        shadow_map_.bind_shadow_texture(5);
+    } else {
+        glActiveTexture(GL_TEXTURE5);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    glBindVertexArray(fullscreen_vao_);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glActiveTexture(GL_TEXTURE0);
+    end_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Lighting);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, gbuffer_.fbo());
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+    glBlitFramebuffer(0, 0, width, height,
+                      0, 0, width, height,
+                      GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    begin_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Orbitals);
+    renderOrbitalPass(width, height);
+    renderESPPass(width, height);
+    renderNCIPass(width, height);
+    end_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Orbitals);
+
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+
+    if (!editor_state_.selection.empty()) {
+        mol_renderer_.render_selection(camera_.viewMatrix(),
+                                       camera_.projectionMatrix(),
+                                       camera_.camera_position(),
+                                       current_molecule_,
+                                       editor_state_.selection,
+                                       static_cast<sbox::render::MolRenderMode>(state_.mol_render_mode));
+    }
+
+    begin_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Post);
+    if (settings.enable_antialiasing && post_process_.is_initialized() && fbo == viewport_fbo_) {
+        post_process_.apply_fxaa(viewport_color_tex_, width, height);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, width, height);
+        glDisable(GL_DEPTH_TEST);
+        post_process_.blit_to_screen(fullscreen_vao_);
+        glEnable(GL_DEPTH_TEST);
+    }
+    end_gpu_timed_pass(gpu_timing_, App::GpuTimingState::Pass::Post);
+
+    state_.lod_atoms_rendered = current_molecule_.num_atoms();
+    state_.lod_atoms_culled = 0;
+    state_.lod_bonds_rendered = current_molecule_.num_bonds();
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    camera_.setViewportSize(static_cast<float>(viewport_width_), static_cast<float>(viewport_height_));
+}
+
+void App::renderOrbitalPass(int width, int height) {
     Shader* active = nullptr;
     if (state_.show_esp_surface && esp_surface_.is_uploaded() && esp_shader_) {
-        active = esp_shader_.get();
-    } else if (use_cube_fallback_ && has_cube_data_ && cube_shader_) {
+        return;
+    }
+    if (use_cube_fallback_ && has_cube_data_ && cube_shader_) {
         active = cube_shader_.get();
     } else if (has_mo_data_ && mo_shader_) {
         active = mo_shader_.get();
     }
-
-    if (active != nullptr) {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-        active->bind();
-        active->setUniform("u_inv_vp", camera_.inv_view_projection());
-        active->setUniform("u_camera_pos", camera_.camera_position());
-        active->setUniform("u_render_mode", state_.render_mode);
-        active->setUniform("u_iso_value", active == esp_shader_.get() ? state_.esp_density_iso : state_.iso_value);
-        active->setUniform("u_gamma", state_.gamma);
-        active->setUniform("u_max_density", max_density_estimate_);
-        active->setUniform("u_bound_radius", state_.mol_bound_radius);
-        active->setUniform("u_volume_steps", settings_manager_.settings().volume_steps);
-        active->setUniform("u_isosurface_steps", settings_manager_.settings().isosurface_steps);
-
-        const int res_loc = glGetUniformLocation(active->id(), "u_resolution");
-        if (res_loc >= 0) {
-            glUniform2f(res_loc, static_cast<float>(width), static_cast<float>(height));
-        }
-
-        if (active == esp_shader_.get()) {
-            esp_surface_.bind(active->id(), 6, 7);
-            const Eigen::Vector3f orig = esp_surface_.origin();
-            const Eigen::Matrix3f w2g = esp_surface_.world_to_grid();
-            const int origin_loc = glGetUniformLocation(active->id(), "u_grid_origin");
-            if (origin_loc >= 0) {
-                glUniform3f(origin_loc, orig.x(), orig.y(), orig.z());
-            }
-            const int w2g_loc = glGetUniformLocation(active->id(), "u_world_to_grid");
-            if (w2g_loc >= 0) {
-                glUniformMatrix3fv(w2g_loc, 1, GL_FALSE, w2g.data());
-            }
-            if (latest_result_.has_value() && latest_result_->has_density_cube) {
-                const int dims_loc = glGetUniformLocation(active->id(), "u_grid_dims");
-                if (dims_loc >= 0) {
-                    glUniform3i(dims_loc,
-                                latest_result_->density_cube.nx,
-                                latest_result_->density_cube.ny,
-                                latest_result_->density_cube.nz);
-                }
-            }
-            const int min_loc = glGetUniformLocation(active->id(), "u_esp_min");
-            if (min_loc >= 0) {
-                glUniform1f(min_loc, state_.esp_auto_range ? esp_surface_.esp_min() : state_.esp_color_min);
-            }
-            const int max_loc = glGetUniformLocation(active->id(), "u_esp_max");
-            if (max_loc >= 0) {
-                glUniform1f(max_loc, state_.esp_auto_range ? esp_surface_.esp_max() : state_.esp_color_max);
-            }
-        } else if (!use_cube_fallback_) {
-            const int mo_idx = state_.selected_mo >= 0 ? state_.selected_mo : find_homo_index();
-            active->setUniform("u_mo_index", mo_idx);
-            active->setUniform("u_num_shells", basis_textures_.num_shells());
-            active->setUniform("u_num_basis", basis_textures_.num_basis());
-            active->setUniform("u_num_mo", basis_textures_.num_mo());
-            basis_textures_.bind(active->id(), 1);
-        } else {
-            volume_texture_.bind(active->id(), 5);
-            const Eigen::Vector3f orig = volume_texture_.origin();
-            const Eigen::Matrix3f w2g = volume_texture_.world_to_grid();
-            const int origin_loc = glGetUniformLocation(active->id(), "u_grid_origin");
-            if (origin_loc >= 0) {
-                glUniform3f(origin_loc, orig.x(), orig.y(), orig.z());
-            }
-            const int w2g_loc = glGetUniformLocation(active->id(), "u_world_to_grid");
-            if (w2g_loc >= 0) {
-                glUniformMatrix3fv(w2g_loc, 1, GL_FALSE, w2g.data());
-            }
-            const int dims_loc = glGetUniformLocation(active->id(), "u_grid_dims");
-            if (dims_loc >= 0) {
-                glUniform3i(dims_loc, volume_texture_.nx(), volume_texture_.ny(), volume_texture_.nz());
-            }
-        }
-
-        glBindVertexArray(fullscreen_vao_);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-        glBindVertexArray(0);
-
-        if (active == esp_shader_.get()) {
-            esp_surface_.unbind();
-        } else if (!use_cube_fallback_) {
-            basis_textures_.unbind();
-        } else {
-            volume_texture_.unbind();
-        }
-
-        glDisable(GL_BLEND);
+    if (active == nullptr) {
+        return;
     }
 
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    camera_.setViewportSize(static_cast<float>(viewport_width_), static_cast<float>(viewport_height_));
+    active->bind();
+    active->setUniform("u_inv_vp", camera_.inv_view_projection());
+    active->setUniform("u_camera_pos", camera_.camera_position());
+    active->setUniform("u_render_mode", state_.render_mode);
+    active->setUniform("u_iso_value", state_.iso_value);
+    active->setUniform("u_gamma", state_.gamma);
+    active->setUniform("u_max_density", max_density_estimate_);
+    active->setUniform("u_bound_radius", state_.mol_bound_radius);
+    active->setUniform("u_volume_steps", settings_manager_.settings().volume_steps);
+    active->setUniform("u_isosurface_steps", settings_manager_.settings().isosurface_steps);
+    const int res_loc = glGetUniformLocation(active->id(), "u_resolution");
+    if (res_loc >= 0) {
+        glUniform2f(res_loc, static_cast<float>(width), static_cast<float>(height));
+    }
+
+    if (!use_cube_fallback_) {
+        const int mo_idx = state_.selected_mo >= 0 ? state_.selected_mo : find_homo_index();
+        active->setUniform("u_mo_index", mo_idx);
+        active->setUniform("u_num_shells", basis_textures_.num_shells());
+        active->setUniform("u_num_basis", basis_textures_.num_basis());
+        active->setUniform("u_num_mo", basis_textures_.num_mo());
+        basis_textures_.bind(active->id(), 1);
+    } else {
+        volume_texture_.bind(active->id(), 5);
+        const Eigen::Vector3f orig = volume_texture_.origin();
+        const Eigen::Matrix3f w2g = volume_texture_.world_to_grid();
+        const int origin_loc = glGetUniformLocation(active->id(), "u_grid_origin");
+        if (origin_loc >= 0) {
+            glUniform3f(origin_loc, orig.x(), orig.y(), orig.z());
+        }
+        const int w2g_loc = glGetUniformLocation(active->id(), "u_world_to_grid");
+        if (w2g_loc >= 0) {
+            glUniformMatrix3fv(w2g_loc, 1, GL_FALSE, w2g.data());
+        }
+        const int dims_loc = glGetUniformLocation(active->id(), "u_grid_dims");
+        if (dims_loc >= 0) {
+            glUniform3i(dims_loc, volume_texture_.nx(), volume_texture_.ny(), volume_texture_.nz());
+        }
+    }
+
+    glBindVertexArray(fullscreen_vao_);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    if (!use_cube_fallback_) {
+        basis_textures_.unbind();
+    } else {
+        volume_texture_.unbind();
+    }
+}
+
+void App::renderESPPass(int width, int height) {
+    if (!state_.show_esp_surface || !esp_surface_.is_uploaded() || esp_shader_ == nullptr) {
+        return;
+    }
+
+    esp_shader_->bind();
+    esp_shader_->setUniform("u_inv_vp", camera_.inv_view_projection());
+    esp_shader_->setUniform("u_camera_pos", camera_.camera_position());
+    esp_shader_->setUniform("u_render_mode", state_.render_mode);
+    esp_shader_->setUniform("u_iso_value", state_.esp_density_iso);
+    esp_shader_->setUniform("u_gamma", state_.gamma);
+    esp_shader_->setUniform("u_max_density", max_density_estimate_);
+    esp_shader_->setUniform("u_bound_radius", state_.mol_bound_radius);
+    esp_shader_->setUniform("u_volume_steps", settings_manager_.settings().volume_steps);
+    esp_shader_->setUniform("u_isosurface_steps", settings_manager_.settings().isosurface_steps);
+    const int res_loc = glGetUniformLocation(esp_shader_->id(), "u_resolution");
+    if (res_loc >= 0) {
+        glUniform2f(res_loc, static_cast<float>(width), static_cast<float>(height));
+    }
+
+    esp_surface_.bind(esp_shader_->id(), 6, 7);
+    const Eigen::Vector3f orig = esp_surface_.origin();
+    const Eigen::Matrix3f w2g = esp_surface_.world_to_grid();
+    const int origin_loc = glGetUniformLocation(esp_shader_->id(), "u_grid_origin");
+    if (origin_loc >= 0) {
+        glUniform3f(origin_loc, orig.x(), orig.y(), orig.z());
+    }
+    const int w2g_loc = glGetUniformLocation(esp_shader_->id(), "u_world_to_grid");
+    if (w2g_loc >= 0) {
+        glUniformMatrix3fv(w2g_loc, 1, GL_FALSE, w2g.data());
+    }
+    if (latest_result_.has_value() && latest_result_->has_density_cube) {
+        const int dims_loc = glGetUniformLocation(esp_shader_->id(), "u_grid_dims");
+        if (dims_loc >= 0) {
+            glUniform3i(dims_loc,
+                        latest_result_->density_cube.nx,
+                        latest_result_->density_cube.ny,
+                        latest_result_->density_cube.nz);
+        }
+    }
+    const int min_loc = glGetUniformLocation(esp_shader_->id(), "u_esp_min");
+    if (min_loc >= 0) {
+        glUniform1f(min_loc, state_.esp_auto_range ? esp_surface_.esp_min() : state_.esp_color_min);
+    }
+    const int max_loc = glGetUniformLocation(esp_shader_->id(), "u_esp_max");
+    if (max_loc >= 0) {
+        glUniform1f(max_loc, state_.esp_auto_range ? esp_surface_.esp_max() : state_.esp_color_max);
+    }
+
+    glBindVertexArray(fullscreen_vao_);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    esp_surface_.unbind();
+}
+
+void App::renderNCIPass(int width, int height) {
+    (void)width;
+    (void)height;
+    if (!state_.show_nci || !nci_grid_.has_value() || nci_shader_ == nullptr ||
+        !nci_rdg_texture_.is_uploaded() || !nci_sign_texture_.is_uploaded()) {
+        return;
+    }
+
+    nci_shader_->bind();
+    nci_shader_->setUniform("u_inv_vp", camera_.inv_view_projection());
+    nci_shader_->setUniform("u_camera_pos", camera_.camera_position());
+    nci_shader_->setUniform("u_bound_radius", state_.mol_bound_radius);
+    nci_shader_->setUniform("u_isosurface_steps", settings_manager_.settings().isosurface_steps);
+    nci_shader_->setUniform("u_rdg_iso", state_.nci_rdg_iso);
+    nci_shader_->setUniform("u_rho_range", state_.nci_color_range);
+
+    nci_rdg_texture_.bind(nci_shader_->id(), 8);
+    nci_sign_texture_.bind(nci_shader_->id(), 9);
+    const int sign_loc = glGetUniformLocation(nci_shader_->id(), "u_sign_rho");
+    if (sign_loc >= 0) {
+        glUniform1i(sign_loc, 9);
+    }
+
+    const Eigen::Vector3f orig = nci_rdg_texture_.origin();
+    const Eigen::Matrix3f w2g = nci_rdg_texture_.world_to_grid();
+    const int origin_loc = glGetUniformLocation(nci_shader_->id(), "u_grid_origin");
+    if (origin_loc >= 0) {
+        glUniform3f(origin_loc, orig.x(), orig.y(), orig.z());
+    }
+    const int w2g_loc = glGetUniformLocation(nci_shader_->id(), "u_world_to_grid");
+    if (w2g_loc >= 0) {
+        glUniformMatrix3fv(w2g_loc, 1, GL_FALSE, w2g.data());
+    }
+    const int dims_loc = glGetUniformLocation(nci_shader_->id(), "u_grid_dims");
+    if (dims_loc >= 0) {
+        glUniform3i(dims_loc, nci_rdg_texture_.nx(), nci_rdg_texture_.ny(), nci_rdg_texture_.nz());
+    }
+
+    glBindVertexArray(fullscreen_vao_);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+
+    nci_rdg_texture_.unbind();
+    nci_sign_texture_.unbind();
+    glActiveTexture(GL_TEXTURE0);
 }
 
 void App::uploadCurrentMoleculeToRenderers() {
     has_d_orbital_analysis_ = false;
     current_d_orbitals_ = {};
     current_metal_index_ = -1;
+    nci_grid_.reset();
+    state_.show_nci = false;
+    state_.nci_plot_rdg.clear();
+    state_.nci_plot_sign_rho.clear();
+    state_.nci_compute_requested = false;
+    state_.cached_symmetry_elements.clear();
+    state_.symmetry_elements_dirty = true;
     sbox::render::set_atom_radius_scale(settings_manager_.settings().atom_scale);
     sbox::render::set_bond_radius_scale(settings_manager_.settings().bond_scale);
     const auto color_mode = static_cast<sbox::render::ColorMode>(state_.color_mode);

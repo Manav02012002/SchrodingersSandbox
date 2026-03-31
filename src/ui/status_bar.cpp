@@ -49,6 +49,12 @@ void draw_status_bar(const AppState& state, bool show_fps, const sbox::UpdateInf
         ImGui::SameLine();
         ImGui::Text("Rendered: %d/%d atoms", state.lod_atoms_rendered, state.lod_atoms_rendered + state.lod_atoms_culled);
     }
+    if (!state.current_rendering_mode.empty()) {
+        ImGui::SameLine();
+        ImGui::TextUnformatted(" | ");
+        ImGui::SameLine();
+        ImGui::TextUnformatted(state.current_rendering_mode.c_str());
+    }
     if (pending_update != nullptr && pending_update->update_available) {
         ImGui::SameLine();
         ImGui::TextUnformatted(" | ");

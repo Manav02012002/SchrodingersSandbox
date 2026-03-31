@@ -88,6 +88,7 @@ add_executable(schrodingers_sandbox
     src/main.cpp
     src/backend/backend_manager.cpp
     src/analysis/crystal_field.cpp
+    src/analysis/nci.cpp
     src/analysis/orbital_composition.cpp
     src/backend/python_env.cpp
     src/chem/ligand_library.cpp
@@ -130,12 +131,19 @@ add_executable(schrodingers_sandbox
     src/renderer/camera.cpp
     src/renderer/basis_texture.cpp
     src/renderer/esp_surface.cpp
+    src/renderer/gbuffer.cpp
     src/renderer/lod_renderer.cpp
     src/renderer/mol_renderer.cpp
+    src/renderer/post_process.cpp
+    src/renderer/shadow_map.cpp
+    src/renderer/ssao.cpp
     src/renderer/screenshot.cpp
     src/renderer/volume_texture.cpp
+    src/renderer/video_export.cpp
     src/ui/app.cpp
     src/ui/about_dialog.cpp
+    src/ui/annotations.cpp
+    src/ui/annotation_editor.cpp
     src/ui/bond_order_panel.cpp
     src/ui/ui_utils.cpp
     src/ui/panels.cpp
@@ -147,6 +155,7 @@ add_executable(schrodingers_sandbox
     src/ui/optimization_panel.cpp
     src/ui/pes_panel.cpp
     src/ui/dos_panel.cpp
+    src/ui/export_dialog.cpp
     src/ui/computation_panel.cpp
     src/ui/complex_builder.cpp
     src/ui/constraint_editor.cpp
@@ -156,6 +165,7 @@ add_executable(schrodingers_sandbox
     src/ui/context_menu.cpp
     src/ui/file_dialog.cpp
     src/ui/molecule_info.cpp
+    src/ui/nci_panel.cpp
     src/ui/population_panel.cpp
     src/ui/esp_controls.cpp
     src/ui/ir_spectrum_panel.cpp
@@ -166,6 +176,7 @@ add_executable(schrodingers_sandbox
     src/ui/setup_wizard.cpp
     src/ui/solvent_panel.cpp
     src/ui/spectrochemical_panel.cpp
+    src/ui/symmetry_overlay.cpp
     src/ui/plot_utils.cpp
     src/ui/periodic_table.cpp
     src/ui/orbital_browser.cpp

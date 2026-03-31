@@ -153,6 +153,10 @@ void draw_settings_panel(sbox::Settings& settings,
 
     if (ImGui::BeginTabBar("##settings_tabs")) {
         if (ImGui::BeginTabItem("Rendering")) {
+            int quality_int = static_cast<int>(settings.render_quality);
+            if (ImGui::Combo("Quality Preset", &quality_int, "Low\0Medium\0High\0Ultra\0")) {
+                apply_quality_preset(settings, static_cast<sbox::Settings::RenderQuality>(quality_int));
+            }
             ImGui::SliderInt("Volume Ray March Steps", &settings.volume_steps, 64, 512);
             ImGui::SameLine();
             help_marker("Higher values improve volume quality but cost performance. Default: 192.");
@@ -165,6 +169,13 @@ void draw_settings_panel(sbox::Settings& settings,
             ImGui::Checkbox("Show Hydrogen Labels", &settings.show_hydrogen_labels);
             ImGui::Checkbox("Anti-aliasing", &settings.enable_antialiasing);
             ImGui::Checkbox("VSync", &settings.enable_vsync);
+            ImGui::Checkbox("Deferred Molecular Rendering", &settings.use_deferred_rendering);
+            ImGui::Checkbox("Ambient Occlusion (SSAO)", &settings.enable_ssao);
+            ImGui::SliderFloat("AO Radius", &settings.ssao_radius, 0.5f, 5.0f);
+            ImGui::SliderFloat("AO Power", &settings.ssao_power, 0.5f, 5.0f);
+            ImGui::Checkbox("Directional Shadows", &settings.enable_shadows);
+            ImGui::SliderInt("Shadow Resolution", &settings.shadow_resolution, 512, 4096);
+            ImGui::Checkbox("Render Stats Overlay", &settings.show_render_stats);
             ImGui::SliderInt("LOD Threshold (atoms)", &settings.lod_threshold_atoms, 50, 1000);
             ImGui::SameLine();
             help_marker("Molecules above this size use simplified rendering for far atoms.");

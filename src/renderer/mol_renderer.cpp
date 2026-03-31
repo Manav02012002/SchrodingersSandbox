@@ -251,6 +251,10 @@ MolRenderer::MolRenderer() {
                                                   sbox::get_shader_path("atom_impostor.frag"));
     bond_shader_ = std::make_unique<sbox::Shader>(sbox::get_shader_path("bond_impostor.vert"),
                                                   sbox::get_shader_path("bond_impostor.frag"));
+    gbuffer_atom_shader_ = std::make_unique<sbox::Shader>(sbox::get_shader_path("gbuffer_atom.vert"),
+                                                          sbox::get_shader_path("gbuffer_atom.frag"));
+    gbuffer_bond_shader_ = std::make_unique<sbox::Shader>(sbox::get_shader_path("gbuffer_bond.vert"),
+                                                          sbox::get_shader_path("gbuffer_bond.frag"));
 
     constexpr std::array<float, 12> quad_vertices = {
         -1.0f, -1.0f,
@@ -493,6 +497,62 @@ void MolRenderer::render(const Eigen::Matrix4f& view_matrix,
         }
         glBindVertexArray(0);
     }
+}
+
+void MolRenderer::render_gbuffer(const Eigen::Matrix4f& view_matrix,
+                                 const Eigen::Matrix4f& proj_matrix,
+                                 const Eigen::Vector3f& camera_pos,
+                                 MolRenderMode mode) {
+    if (!has_data()) {
+        return;
+    }
+
+    glEnable(GL_DEPTH_TEST);
+
+    const bool render_atoms = (mode == MolRenderMode::BallAndStick || mode == MolRenderMode::SpaceFilling);
+    const bool render_bonds = (mode == MolRenderMode::BallAndStick || mode == MolRenderMode::StickOnly);
+
+    if (render_atoms) {
+        std::vector<float> atom_draw_data = atom_instances_;
+        if (mode == MolRenderMode::SpaceFilling) {
+            for (int i = 0; i < atom_count_; ++i) {
+                const std::size_t base = static_cast<std::size_t>(i) * 8;
+                atom_draw_data[base + 3] = vdw_radius(static_cast<int>(atom_draw_data[base + 7])) * g_atom_radius_scale;
+            }
+        }
+
+        upload_atom_instances(atom_instance_vbo_, atom_draw_data);
+
+        gbuffer_atom_shader_->bind();
+        gbuffer_atom_shader_->setUniform("u_view", view_matrix);
+        gbuffer_atom_shader_->setUniform("u_proj", proj_matrix);
+        gbuffer_atom_shader_->setUniform("u_camera_pos", camera_pos);
+
+        glBindVertexArray(atom_vao_);
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, atom_count_);
+        glBindVertexArray(0);
+    }
+
+    if (render_bonds && bond_count_ > 0) {
+        std::vector<float> bond_draw_data = bond_instances_;
+        const float bond_radius = ((mode == MolRenderMode::StickOnly) ? kBondRadiusStickOnly : kBondRadiusBallAndStick) * g_bond_radius_scale;
+        for (int i = 0; i < bond_count_; ++i) {
+            bond_draw_data[static_cast<std::size_t>(i) * 13 + 12] = bond_radius;
+        }
+        upload_bond_instances(bond_instance_vbo_, bond_draw_data);
+
+        gbuffer_bond_shader_->bind();
+        gbuffer_bond_shader_->setUniform("u_view", view_matrix);
+        gbuffer_bond_shader_->setUniform("u_proj", proj_matrix);
+        gbuffer_bond_shader_->setUniform("u_camera_pos", camera_pos);
+
+        glBindVertexArray(bond_vao_);
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, bond_count_);
+        glBindVertexArray(0);
+    }
+
+    upload_atom_instances(atom_instance_vbo_, atom_instances_);
+    upload_bond_instances(bond_instance_vbo_, bond_instances_);
 }
 
 void MolRenderer::render_highlights(const Eigen::Matrix4f& view_matrix,

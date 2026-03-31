@@ -12,6 +12,13 @@ std::string get_settings_path();
 std::string get_recent_files_path();
 
 struct Settings {
+    enum class RenderQuality : int {
+        Low = 0,
+        Medium = 1,
+        High = 2,
+        Ultra = 3,
+    };
+
     int window_width = 1600;
     int window_height = 1000;
     bool window_maximized = false;
@@ -55,10 +62,20 @@ struct Settings {
     int lod_threshold_atoms = 200;
     bool enable_antialiasing = true;
     bool enable_vsync = true;
+    bool use_deferred_rendering = true;
+    bool enable_ssao = true;
+    float ssao_radius = 1.5f;
+    float ssao_power = 2.0f;
+    bool enable_shadows = true;
+    int shadow_resolution = 2048;
+    RenderQuality render_quality = RenderQuality::High;
+    bool show_render_stats = false;
 
     nlohmann::json to_json() const;
     static Settings from_json(const nlohmann::json& j);
 };
+
+void apply_quality_preset(Settings& settings, Settings::RenderQuality quality);
 
 class SettingsManager {
 public:

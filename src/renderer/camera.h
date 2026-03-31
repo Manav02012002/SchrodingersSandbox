@@ -15,6 +15,7 @@ public:
     void handleScroll(float yoffset, bool apply);
     void setTarget(const Eigen::Vector3f& target);
     void setDistance(float distance);
+    void setOrientation(const Eigen::Quaternionf& orientation);
 
     [[nodiscard]] Eigen::Matrix4f viewMatrix() const;
     [[nodiscard]] Eigen::Matrix4f projectionMatrix() const;
@@ -23,6 +24,9 @@ public:
     [[nodiscard]] Eigen::Vector3f cameraPosition() const;
     [[nodiscard]] Eigen::Vector3f camera_position() const;
     [[nodiscard]] Eigen::Matrix4f inv_view_projection() const;
+    [[nodiscard]] const Eigen::Quaternionf& orientation() const;
+    [[nodiscard]] const Eigen::Vector3f& target() const;
+    [[nodiscard]] float distance() const;
 
 private:
     static Eigen::Matrix4f LookAt(const Eigen::Vector3f& eye,

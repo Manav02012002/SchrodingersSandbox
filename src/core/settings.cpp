@@ -71,6 +71,56 @@ std::string get_recent_files_path() {
     return recent_files_path_fs().string();
 }
 
+void apply_quality_preset(Settings& settings, Settings::RenderQuality quality) {
+    settings.render_quality = quality;
+    switch (quality) {
+    case Settings::RenderQuality::Low:
+        settings.volume_steps = 96;
+        settings.isosurface_steps = 128;
+        settings.enable_ssao = false;
+        settings.enable_shadows = false;
+        settings.enable_antialiasing = false;
+        settings.shadow_resolution = 1024;
+        settings.cube_resolution = 40;
+        settings.use_deferred_rendering = false;
+        break;
+    case Settings::RenderQuality::Medium:
+        settings.volume_steps = 128;
+        settings.isosurface_steps = 192;
+        settings.enable_ssao = false;
+        settings.enable_shadows = true;
+        settings.enable_antialiasing = true;
+        settings.shadow_resolution = 1024;
+        settings.cube_resolution = 60;
+        settings.use_deferred_rendering = true;
+        break;
+    case Settings::RenderQuality::High:
+        settings.volume_steps = 192;
+        settings.isosurface_steps = 256;
+        settings.enable_ssao = true;
+        settings.ssao_radius = 1.5f;
+        settings.ssao_power = 2.0f;
+        settings.enable_shadows = true;
+        settings.enable_antialiasing = true;
+        settings.shadow_resolution = 2048;
+        settings.cube_resolution = 80;
+        settings.use_deferred_rendering = true;
+        break;
+    case Settings::RenderQuality::Ultra:
+        settings.volume_steps = 384;
+        settings.isosurface_steps = 512;
+        settings.enable_ssao = true;
+        settings.ssao_radius = 2.0f;
+        settings.ssao_power = 2.5f;
+        settings.enable_shadows = true;
+        settings.enable_antialiasing = true;
+        settings.shadow_resolution = 4096;
+        settings.cube_resolution = 120;
+        settings.use_deferred_rendering = true;
+        break;
+    }
+}
+
 nlohmann::json Settings::to_json() const {
     return json{
         {"window_width", window_width},
@@ -109,6 +159,14 @@ nlohmann::json Settings::to_json() const {
         {"lod_threshold_atoms", lod_threshold_atoms},
         {"enable_antialiasing", enable_antialiasing},
         {"enable_vsync", enable_vsync},
+        {"use_deferred_rendering", use_deferred_rendering},
+        {"enable_ssao", enable_ssao},
+        {"ssao_radius", ssao_radius},
+        {"ssao_power", ssao_power},
+        {"enable_shadows", enable_shadows},
+        {"shadow_resolution", shadow_resolution},
+        {"render_quality", static_cast<int>(render_quality)},
+        {"show_render_stats", show_render_stats},
     };
 }
 
@@ -154,6 +212,16 @@ Settings Settings::from_json(const nlohmann::json& j) {
     load_if_present(j, "lod_threshold_atoms", settings.lod_threshold_atoms);
     load_if_present(j, "enable_antialiasing", settings.enable_antialiasing);
     load_if_present(j, "enable_vsync", settings.enable_vsync);
+    load_if_present(j, "use_deferred_rendering", settings.use_deferred_rendering);
+    load_if_present(j, "enable_ssao", settings.enable_ssao);
+    load_if_present(j, "ssao_radius", settings.ssao_radius);
+    load_if_present(j, "ssao_power", settings.ssao_power);
+    load_if_present(j, "enable_shadows", settings.enable_shadows);
+    load_if_present(j, "shadow_resolution", settings.shadow_resolution);
+    int render_quality = static_cast<int>(settings.render_quality);
+    load_if_present(j, "render_quality", render_quality);
+    settings.render_quality = static_cast<Settings::RenderQuality>(std::clamp(render_quality, 0, 3));
+    load_if_present(j, "show_render_stats", settings.show_render_stats);
     return settings;
 }
 

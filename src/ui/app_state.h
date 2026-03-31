@@ -5,6 +5,7 @@
 #include "chem/coordination.h"
 #include "core/elements.h"
 #include "core/slater.h"
+#include "ui/symmetry_overlay.h"
 
 #include <algorithm>
 #include <string>
@@ -26,6 +27,7 @@ enum class PropertyView : int {
     OrbitalComposition,
     IRSpectrum,
     ESPControls,
+    NCI,
 };
 
 struct AppState {
@@ -168,6 +170,8 @@ struct AppState {
     bool show_bond_orders = false;
     bool show_dipole = false;
     bool show_esp_surface = false;
+    bool show_nci = false;
+    bool show_symmetry_elements = false;
     bool show_complex_builder = false;
     bool show_spectrochemical = false;
     bool show_settings = false;
@@ -176,6 +180,14 @@ struct AppState {
     float esp_color_min = -0.05f;
     float esp_color_max = 0.05f;
     bool esp_auto_range = true;
+    float nci_rdg_iso = 0.3f;
+    float nci_rho_cutoff = 0.05f;
+    float nci_color_range = 0.04f;
+    bool nci_compute_requested = false;
+    std::vector<float> nci_plot_rdg;
+    std::vector<float> nci_plot_sign_rho;
+    std::vector<SymmetryElement> cached_symmetry_elements;
+    bool symmetry_elements_dirty = true;
 
     int render_mode = 0;  // 0=volume, 1=isosurface, 2=phase isosurface
     float iso_value = 0.01f;
@@ -212,6 +224,8 @@ struct AppState {
     int current_n = 1;
     int current_l = 0;
     float current_Zeff = 1.0f;
+    std::string current_rendering_mode = "Rendering: Forward";
+    std::string render_stats_summary;
 
     void update() {
         selected_Z = std::clamp(selected_Z, 1, 118);

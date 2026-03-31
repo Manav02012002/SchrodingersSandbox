@@ -1,3 +1,11 @@
+// HiDPI manual test checklist:
+// 1. On Retina Mac: verify text is sharp, not blurry
+// 2. On Retina Mac: verify orbital rendering is sharp (not pixelated)
+// 3. On Retina Mac: verify mouse picking works (click on atoms hits correctly)
+// 4. On Retina Mac: verify screenshots at viewport resolution produce 2x pixel images
+// 5. On non-Retina display: verify everything still works at scale=1.0
+// 6. Moving window between Retina and non-Retina: verify resize and re-render
+
 #include "renderer/window.h"
 #include "core/logging.h"
 
@@ -7,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <cmath>
 
 namespace sbox {
 
@@ -71,6 +80,26 @@ void Window::pollEvents() const {
 
 void Window::swapBuffers() const {
     glfwSwapBuffers(window_);
+}
+
+float Window::content_scale() const {
+    float x_scale = 1.0f;
+    float y_scale = 1.0f;
+    glfwGetWindowContentScale(window_, &x_scale, &y_scale);
+    (void)y_scale;
+    return x_scale;
+}
+
+int Window::framebuffer_to_window_ratio() const {
+    int window_width = 1;
+    int window_height = 1;
+    glfwGetWindowSize(window_, &window_width, &window_height);
+    (void)window_height;
+    if (window_width <= 0) {
+        return 1;
+    }
+    return std::max(1, static_cast<int>(std::lround(static_cast<double>(framebuffer_width_) /
+                                                    static_cast<double>(window_width))));
 }
 
 void Window::ErrorCallback(int error, const char* description) {
